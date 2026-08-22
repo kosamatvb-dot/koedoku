@@ -214,70 +214,81 @@ function chunkText(text, maxChars) {
         chunks.push(current);
     return chunks;
 }
-// --- annotatedText（《単語|読み》の形式で、読みが必要な箇所にだけ印がついたテキスト）を解析時に検証する ---
-// --- 文章を「文」の単位に分割する。句点・感嘆符・疑問符・改行を区切りとする ---
-// annotatedTextとoriginalの両方に同じ規則で使うことで、文単位で個別に検証できるようにする
-function splitIntoSentences(text) {
-    const parts = text.split(/(?<=[。！？\n])/);
-    return parts.filter((p) => p.length > 0);
-}
-// 印を全部取り除いた結果が元の文と完全に一致するかを検証する（1文単位）
-function validateSentenceAnnotation(originalSentence, annotatedSentence, rubyHints) {
+// --- annotatedText（《単語|読み》の形式で、読みが必要な箇所にだけ印がついたテキスト）を検証・修復する ---
+// AIの回答を、印（《単語｜読み》）と印なしの地の文の「単語の並び」として分解し、
+// 原文の先頭から順番に「この単語は今の位置に本当にあるか」を1つずつ照合していく。
+// 一致すればそのまま採用（印付きならその読みを使う）。一致しなければ、少し先まで
+// 探して見つかればそこまでの間だけ原文そのままにして再同期し、それでも見つからなければ
+// その単語だけを丸ごと諦めて次の単語に進む。
+// 常に原文の文字を直接コピーして組み立てるため、最終的に印を取り除けば必ず原文と
+// 完全に一致することが保証される（＝この修復結果は常に「検証済み」の状態になる）。
+function parseAnnotationChunks(text) {
     const annotationRe = /《([^|｜》]+)[|｜]([^》]+)》/g;
-    let plainCheck = "";
-    const conflicts = [];
+    const chunks = [];
     let lastIndex = 0;
     let m;
-    while ((m = annotationRe.exec(annotatedSentence)) !== null) {
-        const before = annotatedSentence.slice(lastIndex, m.index);
-        plainCheck += before;
-        const term = m[1];
-        const reading = m[2];
-        plainCheck += term;
-        const rubyReading = rubyHints[term];
-        if (rubyReading && rubyReading !== reading) {
-            conflicts.push({ term, rubyReading, aiReading: reading });
-        }
+    while ((m = annotationRe.exec(text)) !== null) {
+        if (m.index > lastIndex)
+            chunks.push({ type: "literal", text: text.slice(lastIndex, m.index) });
+        chunks.push({ type: "anno", text: m[1], reading: m[2] });
         lastIndex = annotationRe.lastIndex;
     }
-    plainCheck += annotatedSentence.slice(lastIndex);
-    return { valid: plainCheck === originalSentence, conflicts };
+    if (lastIndex < text.length)
+        chunks.push({ type: "literal", text: text.slice(lastIndex) });
+    return chunks;
 }
-// --- annotatedTextを検証する（文単位）。1文でもAIが書き換えてしまっていたら、
-//     その文だけ原文にフォールバックし、他の正しく処理できた文は活かす。
-//     （長い地の文の中で、ごく一部の文だけAIが微妙な言い換えをしてしまうことがあり、
-//       文章全体を丸ごと無効にすると、正しく処理できていた大部分まで巻き込んで
-//       捨ててしまうことになるため、被害を1文単位に抑える）
 function validateAnnotatedText(original, annotated, rubyHints) {
-    const origSentences = splitIntoSentences(original);
-    const annoSentences = splitIntoSentences(annotated);
-    if (origSentences.length !== annoSentences.length) {
-        // 文の数自体が食い違っている場合は、文単位の対応付けができないため、
-        // 安全のため全体を無効とする（このケースは稀なはず）
-        console.warn("annotatedTextの検証に失敗しました（文の数が一致しません）。\n" +
-            "【原文】" + original + "\n" +
-            "【AIの回答】" + annotated);
-        return { valid: false, annotatedText: original, conflicts: [] };
-    }
-    let rebuilt = "";
-    const allConflicts = [];
-    let anyValid = false;
-    for (let i = 0; i < origSentences.length; i++) {
-        const result = validateSentenceAnnotation(origSentences[i], annoSentences[i], rubyHints);
-        if (result.valid) {
-            rebuilt += annoSentences[i];
-            allConflicts.push(...result.conflicts);
-            anyValid = true;
+    const chunks = parseAnnotationChunks(annotated);
+    const LOOKAHEAD = 20; // 単語のズレを再同期するために先読みする文字数
+    let origPos = 0;
+    let repaired = "";
+    const conflicts = [];
+    let droppedCount = 0;
+    for (const chunk of chunks) {
+        const plain = chunk.text;
+        if (!plain)
+            continue;
+        let foundAt = -1;
+        if (original.startsWith(plain, origPos)) {
+            foundAt = origPos;
         }
         else {
-            // この文だけ原文にフォールバックする（他の文の印は活かす）
-            rebuilt += origSentences[i];
-            console.warn("annotatedTextの検証に失敗しました（1文のみフォールバック）。\n" +
-                "【原文の該当文】" + origSentences[i] + "\n" +
-                "【AIの回答の該当文】" + annoSentences[i]);
+            const windowEnd = Math.min(original.length, origPos + LOOKAHEAD + plain.length);
+            const idx = original.indexOf(plain, origPos);
+            if (idx >= 0 && idx <= windowEnd - plain.length)
+                foundAt = idx;
+        }
+        if (foundAt >= 0) {
+            // 再同期のために飛ばした部分（あれば）は原文そのままコピーする
+            if (foundAt > origPos)
+                repaired += original.slice(origPos, foundAt);
+            if (chunk.type === "anno") {
+                repaired += "《" + plain + "｜" + chunk.reading + "》";
+                const rubyReading = rubyHints[plain];
+                if (rubyReading && rubyReading !== chunk.reading) {
+                    conflicts.push({ term: plain, rubyReading, aiReading: chunk.reading || "" });
+                }
+            }
+            else {
+                repaired += plain;
+            }
+            origPos = foundAt + plain.length;
+        }
+        else {
+            // この単語だけは見つからなかったので諦める（原文側のポインタは進めない。
+            // 後続の単語がうまく再同期できれば、この間の原文は自動的に埋め合わされる）
+            droppedCount++;
         }
     }
-    return { valid: anyValid, annotatedText: rebuilt, conflicts: allConflicts };
+    // 最後まで対応づけられなかった残りの原文があれば、そのまま付け足す
+    if (origPos < original.length)
+        repaired += original.slice(origPos);
+    if (droppedCount > 0) {
+        console.warn(`annotatedTextの一部（${droppedCount}箇所）を原文にフォールバックしました。\n` +
+            "【原文】" + original + "\n" +
+            "【AIの回答】" + annotated);
+    }
+    return { valid: droppedCount === 0, annotatedText: repaired, conflicts };
 }
 // --- 再生のたびに、annotatedTextから読み上げ用テキストを組み立て直す ---
 // 手動辞書（customReadings）は、AIが決めた読みより常に優先される。これにより、
