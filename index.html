@@ -214,6 +214,38 @@ function chunkText(text, maxChars) {
         chunks.push(current);
     return chunks;
 }
+// --- annotatedText（《単語|読み》の形式で、読みが必要な箇所にだけ印がついたテキスト）を解析する ---
+// 印を全部取り除いた結果が元のtextと完全に一致するかを検証することで、
+// AIが元の文章を勝手に書き換えていないか（ハルシネーション）を厳密にチェックできる。
+function parseAnnotatedText(original, annotated, rubyHints) {
+    const annotationRe = /《([^|》]+)\|([^》]+)》/g;
+    let spokenText = "";
+    let plainCheck = "";
+    const conflicts = [];
+    let lastIndex = 0;
+    let m;
+    while ((m = annotationRe.exec(annotated)) !== null) {
+        const before = annotated.slice(lastIndex, m.index);
+        spokenText += before;
+        plainCheck += before;
+        const term = m[1];
+        const reading = m[2];
+        spokenText += reading;
+        plainCheck += term;
+        const rubyReading = rubyHints[term];
+        if (rubyReading && rubyReading !== reading) {
+            conflicts.push({ term, rubyReading, aiReading: reading });
+        }
+        lastIndex = annotationRe.lastIndex;
+    }
+    const rest = annotated.slice(lastIndex);
+    spokenText += rest;
+    plainCheck += rest;
+    // 印を取り除いた結果が元の文章と完全に一致しなければ、AIが文章を書き換えてしまった
+    // 可能性が高いので、この結果は信用せず原文にフォールバックする
+    const valid = plainCheck === original;
+    return { spokenText: valid ? spokenText : original, valid, conflicts: valid ? conflicts : [] };
+}
 // --- Gemini APIでセリフの話者を推定する ---
 async function analyzeWithGemini(text, apiKey, knownNames, rubyHints) {
     var _a, _b, _c, _d, _e, _f, _g;
@@ -222,7 +254,7 @@ async function analyzeWithGemini(text, apiKey, knownNames, rubyHints) {
         : "";
     const rubyHintKeys = Object.keys(rubyHints).filter((k) => text.includes(k));
     const rubyHintText = rubyHintKeys.length > 0
-        ? `\n作者がこの章のどこかで指定したルビ（参考情報。この文章中に同じ表記が出てくる場合、まずこの読みが文脈に合っているか確認し、合っていればそのままreadingsに含める。もし文脈上あきらかに違う読み方をすべき箇所であれば、ルビではなくあなたが判断した読みをreadingsに含めること）:\n${rubyHintKeys.map((k) => `${k}＝${rubyHints[k]}`).join("、")}\n`
+        ? `\n作者がこの章のどこかで指定したルビ（参考情報。この文章中に同じ表記が出てくる場合、まずこの読みが文脈に合っているか確認し、合っていれば《単語｜読み》の形でそのまま反映する。もし文脈上あきらかに違う読み方をすべき箇所であれば、ルビではなくあなたが判断した読みを反映すること）:\n${rubyHintKeys.map((k) => `${k}＝${rubyHints[k]}`).join("、")}\n`
         : "";
     const prompt = `以下は日本語の小説の一節です。この文章を「地の文」と「セリフ」に分割し、それぞれのセリフについて話者を推定してください。
 
@@ -232,8 +264,13 @@ async function analyzeWithGemini(text, apiKey, knownNames, rubyHints) {
 - 話者名は文脈から推定した登場人物名。地の文の話者は必ず "地の文" とする
 - 話者がどうしても判別できないセリフは "不明" とする
 - 各セリフについて、話者の性別を "male"（男性）"female"（女性）"unknown"（不明・判別不能）のいずれかで推定する。地の文は "unknown" とする
-- 各セグメントについて、readings フィールドに、そのセグメント本文に含まれる漢字表現（熟語・人名・地名・1文字の名詞なども含む）を基本的にすべて、「その箇所の文脈における」正しい読み（ひらがな）とペアで列挙すること。同じ表記でも別のセグメントでは別の読みになりうるので、必ずそのセグメントの文脈だけを見て判断すること（例：「家」は「いえ」「うち」「か」など文脈で読みが変わる）。作者指定のルビがある単語がこのセグメントに含まれる場合も、必ずreadingsに含め、文脈に合っているか確認すること。また、漢数字で数を表している箇所は、1文字ずつ読むのではなく正しい数として読んだ場合の読み方（例：「一五〇万」→「ひゃくごじゅうまん」）を、数字と助数詞（人・本・月・回など）の組み合わせで促音便・連濁などの音変化が起きるもの（例：「一ヵ月」→「いっかげつ」、「三人」→「さんにん」、「六本」→「ろっぽん」）も、それぞれreadingsに含めること。
-  文脈から判断し、その箇所ではどう読むのが最も自然かを、あなたの最善の判断でreadingsに含めること（間違いを恐れて空欄にするより、その場での最善の判断を答える方が、標準の読み上げに任せるより有益であることが多い）。同じ表記の単語がセグメントごとに異なる読みで登場することもあるので、必ずそのセグメントの文脈だけを見て毎回判断すること。該当がなければ空配列でよい
+- 各セグメントについて、annotatedText フィールドに、text と完全に同じ文字列を、以下の1点だけ変更して出力すること：
+  読み間違いが起きやすい単語（人名・地名・当て字・難読漢字・複数の読み方がある熟語・漢数字・数字と助数詞の組み合わせなど）が現れる**その場所**に限って、
+  「《単語｜読み》」という形式（全角のかぎ括弧と縦棒で単語と読みを囲む）に**その場だけ**置き換えること。
+  例えば元の文章が「毟り取れる石を拾った。虎視眈々と機会を狙う。」なら、
+  annotatedTextは「《毟り｜むしり》取れる石を拾った。《虎視眈々｜こしたんたん》と機会を狙う。」のようになる
+  （「取れる」の部分は読み方に迷う理由がないので、印をつけずそのまま残すこと）。
+  **極めて重要**: 印をつけた部分以外は、文字を一切変更しないこと。同じ単語が同じセグメント内に複数回出てきても、それぞれの出現箇所ごとに個別に判断すること（ある場所では印をつけ、別の場所ではつけない、ということがあってもよい）。読み方に迷う理由が特にない単語には印をつけないこと
 ${rubyHintText}${namesHint}
 
 文章:
@@ -247,21 +284,11 @@ ${text}`;
                     type: "object",
                     properties: {
                         text: { type: "string" },
+                        annotatedText: { type: "string" },
                         speaker: { type: "string" },
                         gender: { type: "string", enum: ["male", "female", "unknown"] },
-                        readings: {
-                            type: "array",
-                            items: {
-                                type: "object",
-                                properties: {
-                                    term: { type: "string" },
-                                    reading: { type: "string" },
-                                },
-                                required: ["term", "reading"],
-                            },
-                        },
                     },
-                    required: ["text", "speaker", "gender", "readings"],
+                    required: ["text", "annotatedText", "speaker", "gender"],
                 },
             },
         },
@@ -305,22 +332,18 @@ ${text}`;
         throw new Error("応答のJSON解析に失敗しました: " + (parseErr.message || parseErr));
     }
     const segments = (parsed.segments || []).map((s) => {
-        const filteredReadings = (s.readings || []).filter((r) => r.term && r.reading);
-        // AIの読みが、作者指定のルビ（rubyHints）と食い違っていないか、ここでクライアント側でチェックする
-        // （追加のAPI呼び出しは不要。手元にあるルビ情報とAIの回答を突き合わせるだけ）
-        const rubyConflicts = [];
-        filteredReadings.forEach((r) => {
-            const rubyReading = rubyHints[r.term];
-            if (rubyReading && rubyReading !== r.reading) {
-                rubyConflicts.push({ term: r.term, rubyReading, aiReading: r.reading });
-            }
-        });
+        const original = s.text || "";
+        const annotated = s.annotatedText || original;
+        // annotatedTextを解析し、位置ごとの読みを反映した読み上げ用テキストを作る。
+        // 印を取り除いた結果が元の文章と一致しない場合（AIが文章を書き換えてしまった場合）は、
+        // 安全のため原文にフォールバックする
+        const { spokenText, conflicts } = parseAnnotatedText(original, annotated, rubyHints);
         return {
-            text: s.text,
+            text: original,
             speaker: s.speaker,
             gender: s.gender,
-            readings: filteredReadings,
-            rubyConflicts,
+            spokenText,
+            conflicts,
         };
     });
     const newNames = [...knownNames];
@@ -873,26 +896,18 @@ function AppInner() {
             }
             try {
                 const preset = presetFor(seg.speaker);
-                // AIが文脈込みで生成した読み上げ用テキストを使う。ただし元の文章と極端に食い違っている
-                // 場合（AIの生成ミス・ハルシネーションの可能性）は、安全のため原文にフォールバックする
-                // 元の表記に対して、単語単位の読み替え辞書（AI推定＋EPUBルビ＋手動辞書）を適用する
-                // 優先順位: 手動辞書 > このセグメントでAIが実際に判断した読み（ルビとの文脈照合済み） >
-                //          章全体のルビ辞書（AIがそのセグメントで言及しなかった単語のフォールバック）
-                const segReadings = {};
-                (seg.readings || []).forEach((r) => { segReadings[r.term] = r.reading; });
-                const chapterRubyMapRaw = (chapters && selectedChapter !== null) ? (chapters[selectedChapter].rubyMap || {}) : {};
-                // 章全体・アプリ全体で使い回す辞書（EPUBルビ・手動辞書）は、無関係な単語への誤爆を防ぐため
-                // 1文字キーを除外する。セグメント単位のAI判断（segReadings）はその1文だけの話なので対象外。
+                // seg.spokenTextは、AIが「その場所ごと」に判定した読みを反映済みのテキスト
+                // （位置ベースで処理しているため、同じ単語が複数回出てきても個別に正しく扱われる）。
+                // その上から、手動辞書（ユーザーが明示的に登録したもの）だけを追加で適用する。
+                const baseSpoken = (seg.spokenText && seg.spokenText.trim()) ? seg.spokenText : clean;
                 const filterLen2 = (m) => {
                     const out = {};
                     Object.keys(m).forEach((k) => { if (k.length >= 2)
                         out[k] = m[k]; });
                     return out;
                 };
-                const chapterRubyMap = filterLen2(chapterRubyMapRaw);
                 const filteredCustomReadings = filterLen2(customReadings);
-                const effectiveReadings = { ...chapterRubyMap, ...segReadings, ...filteredCustomReadings };
-                const spokenText = applyRubyForSpeech(clean, effectiveReadings);
+                const spokenText = applyRubyForSpeech(baseSpoken, filteredCustomReadings);
                 // 音声一覧はReactのstateに頼らず、毎回ブラウザから直接取得する
                 // （stateの更新が非同期のため、初回再生時に古い/空の一覧を参照してしまうバグを防ぐ）
                 const freshVoices = window.speechSynthesis.getVoices() || [];
@@ -932,7 +947,10 @@ function AppInner() {
                             return;
                         }
                         try {
-                            const blob = await synthesizeAzureSpeech(pieceText, azureVoiceName, preset.rate * speedMultiplier, preset.pitch, azureKey, azureRegion);
+                            // Azureモードでは実際に異なる声質（Nanami/Keitaなど）で聞き分けられるため、
+                            // ブラウザ標準モードのような「キャラごとに速度・ピッチを変える」演出は行わず、
+                            // 速度スライダーの値だけを一律で適用する（キャラごとにペースがバラつくのを防ぐ）
+                            const blob = await synthesizeAzureSpeech(pieceText, azureVoiceName, speedMultiplier, 1.0, azureKey, azureRegion);
                             if (playGenerationRef.current !== myGeneration || stopFlagRef.current)
                                 return;
                             const url = URL.createObjectURL(blob);
@@ -951,7 +969,7 @@ function AppInner() {
                                 if (playGenerationRef.current !== myGeneration || stopFlagRef.current)
                                     return;
                                 if (pieceIdx < piecesToSpeak.length - 1) {
-                                    setTimeout(() => speakPieceAzure(pieceIdx + 1), 250 / speedMultiplier);
+                                    setTimeout(() => speakPieceAzure(pieceIdx + 1), 130 / speedMultiplier);
                                 }
                                 else {
                                     speakPieceAzure(pieceIdx + 1);
@@ -1012,13 +1030,15 @@ function AppInner() {
                         utter.voice = chosenVoice;
                     utter.lang = "ja-JP";
                     utter.pitch = preset.pitch;
-                    utter.rate = preset.rate * speedMultiplier;
+                    // 速度はキャラごとに変えず、速度スライダーの値だけで統一する
+                    // （高さ(ピッチ)だけで声を聞き分けてもらい、読むペースは揃える）
+                    utter.rate = speedMultiplier;
                     utter.onend = () => {
                         if (playGenerationRef.current !== myGeneration || stopFlagRef.current)
                             return;
                         if (pieceIdx < piecesToSpeak.length - 1) {
                             // ダッシュ区切りの間は少し間を置く（速度に応じてポーズ時間も調整）
-                            setTimeout(() => speakPiece(pieceIdx + 1), 350 / speedMultiplier);
+                            setTimeout(() => speakPiece(pieceIdx + 1), 180 / speedMultiplier);
                         }
                         else {
                             speakPiece(pieceIdx + 1);
@@ -1284,7 +1304,7 @@ function AppInner() {
                     const preset = presetFor(seg.speaker);
                     const isDialogue = seg.speaker !== "地の文";
                     const active = i === currentIdx;
-                    const conflicts = seg.rubyConflicts || [];
+                    const conflicts = seg.conflicts || [];
                     return (React.createElement(React.Fragment, { key: i },
                         React.createElement("span", { onClick: () => playFrom(i), style: { cursor: "pointer", color: isDialogue ? preset.color : "#2b2620", fontWeight: isDialogue ? 600 : 400, background: active ? preset.color + "22" : "transparent", borderRadius: 4, padding: active ? "1px 2px" : "0" } }, seg.text),
                         conflicts.map((c, ci) => (React.createElement("span", { key: "conflict-" + i + "-" + ci, onClick: (e) => {
@@ -1300,7 +1320,7 @@ function AppInner() {
                             "\u26A0",
                             c.term)))));
                 })),
-                segments.some((s) => (s.rubyConflicts || []).length > 0) && (React.createElement("p", { style: { fontSize: 12, color: "#8a6a3f", marginTop: 10 } }, "\u26A0\u30DE\u30FC\u30AF\u306F\u3001AI\u304C\u30EB\u30D3\u3068\u7570\u306A\u308B\u8AAD\u307F\u65B9\u3092\u9078\u3093\u3060\u7B87\u6240\u3067\u3059\u3002\u30BF\u30C3\u30D7\u3059\u308B\u3068\u3001\u30EB\u30D3\u5074\u306E\u8AAD\u307F\u3092\u8F9E\u66F8\u306B\u56FA\u5B9A\u3067\u304D\u307E\u3059\u3002")))))));
+                segments.some((s) => (s.conflicts || []).length > 0) && (React.createElement("p", { style: { fontSize: 12, color: "#8a6a3f", marginTop: 10 } }, "\u26A0\u30DE\u30FC\u30AF\u306F\u3001AI\u304C\u30EB\u30D3\u3068\u7570\u306A\u308B\u8AAD\u307F\u65B9\u3092\u9078\u3093\u3060\u7B87\u6240\u3067\u3059\u3002\u30BF\u30C3\u30D7\u3059\u308B\u3068\u3001\u30EB\u30D3\u5074\u306E\u8AAD\u307F\u3092\u8F9E\u66F8\u306B\u56FA\u5B9A\u3067\u304D\u307E\u3059\u3002")))))));
 }
 function App() {
     return (React.createElement(ErrorBoundary, null,
