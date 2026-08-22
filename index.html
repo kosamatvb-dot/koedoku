@@ -22,7 +22,7 @@
 <div id="root"></div>
 <script>
 "use strict";
-const { useState, useRef } = React;
+const { useState, useRef, useEffect } = React;
 const VOICE_PRESETS = [
     { key: "narrator", label: "地の文", color: "#8a8577", pitch: 1.0, rate: 1.0 },
     { key: "char1", label: "話者A", color: "#c1533f", pitch: 1.25, rate: 1.03 },
@@ -214,23 +214,22 @@ function chunkText(text, maxChars) {
         chunks.push(current);
     return chunks;
 }
-// --- annotatedText（《単語|読み》の形式で、読みが必要な箇所にだけ印がついたテキスト）を解析する ---
+// --- annotatedText（《単語|読み》の形式で、読みが必要な箇所にだけ印がついたテキスト）を解析時に検証する ---
 // 印を全部取り除いた結果が元のtextと完全に一致するかを検証することで、
 // AIが元の文章を勝手に書き換えていないか（ハルシネーション）を厳密にチェックできる。
-function parseAnnotatedText(original, annotated, rubyHints) {
+// この段階ではrubyHintsとの食い違いだけ検出し、最終的な読み上げテキストの組み立ては
+// 再生のたびに（手動辞書を反映するため）別途行う。
+function validateAnnotatedText(original, annotated, rubyHints) {
     const annotationRe = /《([^|》]+)\|([^》]+)》/g;
-    let spokenText = "";
     let plainCheck = "";
     const conflicts = [];
     let lastIndex = 0;
     let m;
     while ((m = annotationRe.exec(annotated)) !== null) {
         const before = annotated.slice(lastIndex, m.index);
-        spokenText += before;
         plainCheck += before;
         const term = m[1];
         const reading = m[2];
-        spokenText += reading;
         plainCheck += term;
         const rubyReading = rubyHints[term];
         if (rubyReading && rubyReading !== reading) {
@@ -238,13 +237,31 @@ function parseAnnotatedText(original, annotated, rubyHints) {
         }
         lastIndex = annotationRe.lastIndex;
     }
-    const rest = annotated.slice(lastIndex);
-    spokenText += rest;
-    plainCheck += rest;
+    plainCheck += annotated.slice(lastIndex);
     // 印を取り除いた結果が元の文章と完全に一致しなければ、AIが文章を書き換えてしまった
-    // 可能性が高いので、この結果は信用せず原文にフォールバックする
+    // 可能性が高いので、この結果は信用しない
     const valid = plainCheck === original;
-    return { spokenText: valid ? spokenText : original, valid, conflicts: valid ? conflicts : [] };
+    return { valid, conflicts: valid ? conflicts : [] };
+}
+// --- 再生のたびに、annotatedTextから読み上げ用テキストを組み立て直す ---
+// 手動辞書（customReadings）は、AIが決めた読みより常に優先される。これにより、
+// 後から辞書に追加した修正が、キャッシュ済みの解析結果に対しても即座に反映される。
+function resolveSpokenText(original, annotatedText, customReadings) {
+    const source = annotatedText || original;
+    const annotationRe = /《([^|》]+)\|([^》]+)》/g;
+    let result = "";
+    let lastIndex = 0;
+    let m;
+    while ((m = annotationRe.exec(source)) !== null) {
+        result += source.slice(lastIndex, m.index);
+        const term = m[1];
+        const aiReading = m[2];
+        // 手動辞書に同じ単語の登録があれば、AIの判断より優先してそちらを使う
+        result += customReadings[term] || aiReading;
+        lastIndex = annotationRe.lastIndex;
+    }
+    result += source.slice(lastIndex);
+    return result;
 }
 // --- Gemini APIでセリフの話者を推定する ---
 async function analyzeWithGemini(text, apiKey, knownNames, rubyHints) {
@@ -265,12 +282,18 @@ async function analyzeWithGemini(text, apiKey, knownNames, rubyHints) {
 - 話者がどうしても判別できないセリフは "不明" とする
 - 各セリフについて、話者の性別を "male"（男性）"female"（女性）"unknown"（不明・判別不能）のいずれかで推定する。地の文は "unknown" とする
 - 各セグメントについて、annotatedText フィールドに、text と完全に同じ文字列を、以下の1点だけ変更して出力すること：
-  読み間違いが起きやすい単語（人名・地名・当て字・難読漢字・複数の読み方がある熟語・漢数字・数字と助数詞の組み合わせなど）が現れる**その場所**に限って、
-  「《単語｜読み》」という形式（全角のかぎ括弧と縦棒で単語と読みを囲む）に**その場だけ**置き換えること。
+  文章中に含まれる漢字表現（熟語・人名・地名・1文字の単語なども含めて、どんなに簡単そうに見える単語でも例外なく全部）について、
+  その出現箇所ごとに「《単語｜読み》」という形式（全角のかぎ括弧と縦棒で単語と読みを囲む）に**その場だけ**置き換えること。
+  同じ表記の単語が同じセグメント内に複数回出てきても、それぞれの出現箇所ごとに個別に、その場の文脈だけを見て判断すること
+  （同じ単語でも文脈によって読みが変わりうるため、出現箇所ごとに独立して読みを決めること）。
   例えば元の文章が「毟り取れる石を拾った。虎視眈々と機会を狙う。」なら、
-  annotatedTextは「《毟り｜むしり》取れる石を拾った。《虎視眈々｜こしたんたん》と機会を狙う。」のようになる
-  （「取れる」の部分は読み方に迷う理由がないので、印をつけずそのまま残すこと）。
-  **極めて重要**: 印をつけた部分以外は、文字を一切変更しないこと。同じ単語が同じセグメント内に複数回出てきても、それぞれの出現箇所ごとに個別に判断すること（ある場所では印をつけ、別の場所ではつけない、ということがあってもよい）。読み方に迷う理由が特にない単語には印をつけないこと
+  annotatedTextは「《毟り｜むしり》《取れる｜とれる》石を拾った。《虎視眈々｜こしたんたん》と機会を狙う。」のように、
+  簡単そうに見える単語（この例では「取れる」）にも例外なく印をつけること。
+  **漢数字・数字表記について特に注意**: 「一五〇万」「二〇〇〇万」のような漢数字（「〇」を含むものも）を使った数の表記は、1文字ずつ読むのではなく、必ず正しい数としてまとめて読んだ場合の読み方を《 》で示すこと。
+  例：「二〇〇〇万」→《二〇〇〇万｜にせんまん》、「一五〇万」→《一五〇万｜ひゃくごじゅうまん》、「三十二」→《三十二｜さんじゅうに》。
+  数字と助数詞（人・本・月・回など）の組み合わせで、促音便・連濁などの音変化が起きるものも同様に対象とする：
+  例：「一ヵ月」→《一ヵ月｜いっかげつ》、「三人」→《三人｜さんにん》、「六本」→《六本｜ろっぽん》。
+  **極めて重要**: 印をつけた部分以外は、文字を一切変更しないこと
 ${rubyHintText}${namesHint}
 
 文章:
@@ -334,15 +357,15 @@ ${text}`;
     const segments = (parsed.segments || []).map((s) => {
         const original = s.text || "";
         const annotated = s.annotatedText || original;
-        // annotatedTextを解析し、位置ごとの読みを反映した読み上げ用テキストを作る。
-        // 印を取り除いた結果が元の文章と一致しない場合（AIが文章を書き換えてしまった場合）は、
-        // 安全のため原文にフォールバックする
-        const { spokenText, conflicts } = parseAnnotatedText(original, annotated, rubyHints);
+        // annotatedTextを検証する。印を取り除いた結果が元の文章と一致しない場合
+        // （AIが文章を書き換えてしまった場合）は、安全のため原文だけを使うことにする。
+        // 実際の読み上げテキストの組み立ては、手動辞書を反映するため再生のたびに行う。
+        const { valid, conflicts } = validateAnnotatedText(original, annotated, rubyHints);
         return {
             text: original,
             speaker: s.speaker,
             gender: s.gender,
-            spokenText,
+            annotatedText: valid ? annotated : undefined,
             conflicts,
         };
     });
@@ -544,6 +567,13 @@ function AppInner() {
     const [playState, setPlayState] = useState("stopped");
     const [speedMultiplier, setSpeedMultiplier] = useState(1.0);
     const [currentIdx, setCurrentIdx] = useState(-1);
+    const currentSegRef = useRef(null);
+    // 再生中の箇所が変わるたびに、その位置が画面内に見えるよう自動でスクロールする
+    useEffect(() => {
+        if (currentIdx >= 0 && currentSegRef.current) {
+            currentSegRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+        }
+    }, [currentIdx]);
     const [voices, setVoices] = useState([]);
     const [speechSupported, setSpeechSupported] = useState(true);
     const speechCheckedRef = useRef(false);
@@ -921,10 +951,11 @@ function AppInner() {
             }
             try {
                 const preset = presetFor(seg.speaker);
-                // seg.spokenTextは、AIが「その場所ごと」に判定した読みを反映済みのテキスト
-                // （位置ベースで処理しているため、同じ単語が複数回出てきても個別に正しく扱われる）。
-                // その上から、手動辞書（ユーザーが明示的に登録したもの）だけを追加で適用する。
-                const baseSpoken = (seg.spokenText && seg.spokenText.trim()) ? seg.spokenText : clean;
+                // annotatedTextから、毎回その時点の手動辞書を反映しながら読み上げ用テキストを組み立てる。
+                // これにより、解析後に辞書を追加・修正しても、次に再生した瞬間から反映される。
+                const resolvedText = resolveSpokenText(seg.text, seg.annotatedText, customReadings);
+                // annotatedTextの印が付いていない箇所（AIが特に触れなかった単語）に対しても、
+                // 手動辞書の内容を一括で適用しておく（境界チェック付きの安全な置換）
                 const filterLen2 = (m) => {
                     const out = {};
                     Object.keys(m).forEach((k) => { if (k.length >= 2)
@@ -932,7 +963,7 @@ function AppInner() {
                     return out;
                 };
                 const filteredCustomReadings = filterLen2(customReadings);
-                const spokenText = applyRubyForSpeech(baseSpoken, filteredCustomReadings);
+                const spokenText = applyRubyForSpeech(resolvedText, filteredCustomReadings);
                 // 音声一覧はReactのstateに頼らず、毎回ブラウザから直接取得する
                 // （stateの更新が非同期のため、初回再生時に古い/空の一覧を参照してしまうバグを防ぐ）
                 const freshVoices = window.speechSynthesis.getVoices() || [];
@@ -1359,7 +1390,7 @@ function AppInner() {
                     const active = i === currentIdx;
                     const conflicts = seg.conflicts || [];
                     return (React.createElement(React.Fragment, { key: i },
-                        React.createElement("span", { onClick: () => playFrom(i), style: { cursor: "pointer", color: isDialogue ? preset.color : "#2b2620", fontWeight: isDialogue ? 600 : 400, background: active ? preset.color + "22" : "transparent", borderRadius: 4, padding: active ? "1px 2px" : "0" } }, seg.text),
+                        React.createElement("span", { ref: active ? currentSegRef : null, onClick: () => playFrom(i), style: { cursor: "pointer", color: isDialogue ? preset.color : "#2b2620", fontWeight: isDialogue ? 600 : 400, background: active ? preset.color + "22" : "transparent", borderRadius: 4, padding: active ? "1px 2px" : "0" } }, seg.text),
                         conflicts.map((c, ci) => (React.createElement("span", { key: "conflict-" + i + "-" + ci, onClick: (e) => {
                                 e.stopPropagation();
                                 const next = { ...customReadings, [c.term]: c.rubyReading };
