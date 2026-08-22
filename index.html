@@ -955,6 +955,16 @@ function AppInner() {
                                 return;
                             const url = URL.createObjectURL(blob);
                             const audio = new Audio(url);
+                            // 直前の音声（1つ前のピース、またはセグメント切り替え直前の音声）が万が一まだ
+                            // 再生中のまま残っていた場合に備えて、新しい音声を再生する前に確実に止めておく。
+                            // これがセリフの切り替わりのタイミングで音が二重に重なる事故の対策になる。
+                            if (currentAudioRef.current && currentAudioRef.current !== audio) {
+                                try {
+                                    currentAudioRef.current.pause();
+                                    currentAudioRef.current.currentTime = 0;
+                                }
+                                catch (e) { }
+                            }
                             currentAudioRef.current = audio;
                             // 取りこぼし防止のため、生成した全てのAudio要素をここに記録しておく
                             allAudiosRef.current.push(audio);
@@ -964,22 +974,40 @@ function AppInner() {
                                     currentAudioRef.current = null;
                                 allAudiosRef.current = allAudiosRef.current.filter((a) => a !== audio);
                             };
-                            audio.onended = () => {
-                                cleanupAudio();
+                            // 「次のピースへ進む」処理は、再生終了イベント・エラーイベント・再試行失敗の
+                            // どの経路から呼ばれても、必ず1回しか実行されないようにする。
+                            // （複数の経路がそれぞれ独立して「次へ進め」てしまうと、そこから先ずっと
+                            //   2つの再生の流れが並行して走り続け、音声が恒久的に二重になるバグの原因になる）
+                            let advanced = false;
+                            const advanceOnce = (delayMs) => {
+                                if (advanced)
+                                    return;
+                                advanced = true;
                                 if (playGenerationRef.current !== myGeneration || stopFlagRef.current)
                                     return;
-                                if (pieceIdx < piecesToSpeak.length - 1) {
-                                    setTimeout(() => speakPieceAzure(pieceIdx + 1), 130 / speedMultiplier);
+                                if (delayMs > 0) {
+                                    setTimeout(() => speakPieceAzure(pieceIdx + 1), delayMs);
                                 }
                                 else {
                                     speakPieceAzure(pieceIdx + 1);
                                 }
                             };
+                            audio.onended = () => {
+                                cleanupAudio();
+                                const isLast = pieceIdx >= piecesToSpeak.length - 1;
+                                advanceOnce(isLast ? 0 : 130 / speedMultiplier);
+                            };
                             audio.onerror = () => {
                                 cleanupAudio();
-                                if (playGenerationRef.current === myGeneration && !stopFlagRef.current)
-                                    speakPieceAzure(pieceIdx + 1);
+                                advanceOnce(0);
                             };
+                            // 発話の直前にごく短い間を置く（連続してAudioを再生すると、前の音声の停止処理と
+                            // 新しい音声の開始が重なって、一瞬二重に聞こえることがあるため）
+                            await new Promise((r) => setTimeout(r, 40));
+                            if (playGenerationRef.current !== myGeneration || stopFlagRef.current) {
+                                cleanupAudio();
+                                return;
+                            }
                             try {
                                 await audio.play();
                             }
@@ -996,9 +1024,9 @@ function AppInner() {
                                 catch (retryErr) {
                                     console.error("Azure再生リトライ失敗:", retryErr);
                                     cleanupAudio();
-                                    // 1箇所の再生に失敗しても、全体を止めずに次に進む
-                                    if (playGenerationRef.current === myGeneration && !stopFlagRef.current)
-                                        speakPieceAzure(pieceIdx + 1);
+                                    // 1箇所の再生に失敗しても、全体を止めずに次に進む（advanceOnce経由なので、
+                                    // 万が一裏で音声が実際に再生されてonendedが後から発火しても、二重実行はされない）
+                                    advanceOnce(0);
                                 }
                             }
                         }
