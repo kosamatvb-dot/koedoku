@@ -220,7 +220,8 @@ function chunkText(text, maxChars) {
 // この段階ではrubyHintsとの食い違いだけ検出し、最終的な読み上げテキストの組み立ては
 // 再生のたびに（手動辞書を反映するため）別途行う。
 function validateAnnotatedText(original, annotated, rubyHints) {
-    const annotationRe = /《([^|》]+)\|([^》]+)》/g;
+    // AIは全角の縦棒「｜」を使う指示になっているが、念のため半角「|」にも対応しておく
+    const annotationRe = /《([^|｜》]+)[|｜]([^》]+)》/g;
     let plainCheck = "";
     const conflicts = [];
     let lastIndex = 0;
@@ -248,7 +249,8 @@ function validateAnnotatedText(original, annotated, rubyHints) {
 // 後から辞書に追加した修正が、キャッシュ済みの解析結果に対しても即座に反映される。
 function resolveSpokenText(original, annotatedText, customReadings) {
     const source = annotatedText || original;
-    const annotationRe = /《([^|》]+)\|([^》]+)》/g;
+    // AIは全角の縦棒「｜」を使う指示になっているが、念のため半角「|」にも対応しておく
+    const annotationRe = /《([^|｜》]+)[|｜]([^》]+)》/g;
     let result = "";
     let lastIndex = 0;
     let m;
@@ -568,9 +570,29 @@ function AppInner() {
     const [speedMultiplier, setSpeedMultiplier] = useState(1.0);
     const [currentIdx, setCurrentIdx] = useState(-1);
     const currentSegRef = useRef(null);
+    // ユーザーが自分でスクロールした場合、しばらくの間は自動追従を止める
+    // （読み上げ中に上へスクロールして停止ボタンなどを探している最中に、
+    //   勝手に画面が現在再生中の位置へ戻されてしまうのを防ぐ）
+    const userScrollingUntilRef = useRef(0);
+    useEffect(() => {
+        const handleUserScroll = () => {
+            // 自動スクロール自体もscrollイベントを発生させてしまうため、ごく短時間だけ無視する
+            // ラグを設けて、以降4秒間は「ユーザーが手動操作中」とみなす
+            userScrollingUntilRef.current = Date.now() + 4000;
+        };
+        window.addEventListener("wheel", handleUserScroll, { passive: true });
+        window.addEventListener("touchmove", handleUserScroll, { passive: true });
+        return () => {
+            window.removeEventListener("wheel", handleUserScroll);
+            window.removeEventListener("touchmove", handleUserScroll);
+        };
+    }, []);
     // 再生中の箇所が変わるたびに、その位置が画面内に見えるよう自動でスクロールする
+    // （ただし、ユーザーが直前に自分でスクロール操作をしていた場合は、しばらく追従を止める）
     useEffect(() => {
         if (currentIdx >= 0 && currentSegRef.current) {
+            if (Date.now() < userScrollingUntilRef.current)
+                return;
             currentSegRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
         }
     }, [currentIdx]);
@@ -1373,7 +1395,11 @@ function AppInner() {
                         React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", background: preset.color, display: "inline-block" } }),
                         name));
                 })),
-                React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" } },
+                React.createElement("div", { style: {
+                        display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center",
+                        position: "sticky", top: 0, zIndex: 10, background: "#f6f3ecee", backdropFilter: "blur(6px)",
+                        padding: "8px 4px", borderRadius: 10,
+                    } },
                     React.createElement("button", { onClick: togglePlay, style: { padding: "9px 16px", borderRadius: 999, border: "none", background: "#c1533f", color: "#fffdf8", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" } }, playState === "playing" ? "⏸ 一時停止" : playState === "paused" ? "▶ 再開" : "▶ 再生"),
                     React.createElement("button", { onClick: stopPlayback, style: { padding: "9px 14px", borderRadius: 999, border: "1px solid #ddd6c7", background: "#fffdf8", color: "#2b2620", fontSize: 14, cursor: "pointer", fontFamily: "inherit" } }, "\u23F9 \u505C\u6B62"),
                     React.createElement("button", { onClick: () => { stopPlayback(); setSelectedChapter(null); setSegments(null); }, style: { padding: "9px 14px", borderRadius: 999, border: "1px solid #ddd6c7", background: "#fffdf8", color: "#8a8577", fontSize: 14, cursor: "pointer", fontFamily: "inherit" } }, "\u21BA \u7AE0\u4E00\u89A7"),
