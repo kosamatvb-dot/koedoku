@@ -1,0 +1,1313 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0" />
+<title>声読</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CjxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE0IiBmaWxsPSIjYzE1MzNmIi8+CjxwYXRoIGQ9Ik0xNCAxOGMwLTIgMi00IDQtNGgxMmMyIDAgMyAxIDMgM3YyOGMwLTEtMS0yLTMtMkgxOGMtMiAwLTQgMS00IDNWMTh6IiBmaWxsPSIjZmZmZGY4Ii8+CjxwYXRoIGQ9Ik01MCAxOGMwLTItMi00LTQtNEgzNGMtMiAwLTMgMS0zIDN2MjhjMC0xIDEtMiAzLTJoMTJjMiAwIDQgMSA0IDNWMTh6IiBmaWxsPSIjZjBlNmQ4Ii8+CjxsaW5lIHgxPSIzMiIgeTE9IjIwIiB4Mj0iMzIiIHkyPSI0NiIgc3Ryb2tlPSIjYzE1MzNmIiBzdHJva2Utd2lkdGg9IjEuNSIvPgo8L3N2Zz4=">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="apple-touch-icon" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CjxyZWN0IHdpZHRoPSI2NCIgaGVpZ2h0PSI2NCIgcng9IjE0IiBmaWxsPSIjYzE1MzNmIi8+CjxwYXRoIGQ9Ik0xNCAxOGMwLTIgMi00IDQtNGgxMmMyIDAgMyAxIDMgM3YyOGMwLTEtMS0yLTMtMkgxOGMtMiAwLTQgMS00IDNWMTh6IiBmaWxsPSIjZmZmZGY4Ii8+CjxwYXRoIGQ9Ik01MCAxOGMwLTItMi00LTQtNEgzNGMtMiAwLTMgMS0zIDN2MjhjMC0xIDEtMiAzLTJoMTJjMiAwIDQgMSA0IDNWMTh6IiBmaWxsPSIjZjBlNmQ4Ii8+CjxsaW5lIHgxPSIzMiIgeTE9IjIwIiB4Mj0iMzIiIHkyPSI0NiIgc3Ryb2tlPSIjYzE1MzNmIiBzdHJva2Utd2lkdGg9IjEuNSIvPgo8L3N2Zz4=">
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
+<style>
+  html, body { margin: 0; padding: 0; background: #f6f3ec; -webkit-text-size-adjust: 100%; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  #root { min-height: 100vh; }
+  input, button { font-family: inherit; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script>
+"use strict";
+const { useState, useRef } = React;
+const VOICE_PRESETS = [
+    { key: "narrator", label: "地の文", color: "#8a8577", pitch: 1.0, rate: 1.0 },
+    { key: "char1", label: "話者A", color: "#c1533f", pitch: 1.25, rate: 1.03 },
+    { key: "char2", label: "話者B", color: "#3f6b8a", pitch: 0.78, rate: 0.97 },
+    { key: "char3", label: "話者C", color: "#7a8a3f", pitch: 1.1, rate: 1.1 },
+    { key: "char4", label: "話者D", color: "#8a3f74", pitch: 0.9, rate: 0.92 },
+    { key: "char5", label: "話者E", color: "#3f8a7a", pitch: 1.15, rate: 0.95 },
+    { key: "char6", label: "話者F", color: "#a67c3f", pitch: 1.05, rate: 1.08 },
+    { key: "char7", label: "話者G", color: "#5a5a9c", pitch: 0.85, rate: 1.0 },
+];
+// --- Azure Cognitive Services の日本語音声プール（男女それぞれ複数種類あり、iOSの制限を回避できる） ---
+const AZURE_VOICE_POOL = {
+    narrator: "ja-JP-NanamiNeural",
+    male: ["ja-JP-KeitaNeural", "ja-JP-DaichiNeural", "ja-JP-NaokiNeural"],
+    female: ["ja-JP-NanamiNeural", "ja-JP-AoiNeural", "ja-JP-MayuNeural", "ja-JP-ShioriNeural"],
+};
+// --- iOS Safariの自動再生制限を回避するための、ごく短い無音音声（0.1秒ほどのWAV） ---
+// ユーザーが最初にボタンを押した瞬間にこれを再生しておくことで、
+// その後プログラム側から自動で開始する音声（Azureの連続再生）もブロックされにくくする
+const SILENT_AUDIO_DATA_URI = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAQB8AAEAfAAABAAgAZGF0YQAAAAA=";
+// --- AzureのText-to-Speech APIで音声を合成し、音声データ(Blob)を取得する ---
+async function synthesizeAzureSpeech(text, voiceName, rate, pitch, apiKey, region) {
+    const ratePercent = Math.round((rate - 1) * 100);
+    const pitchPercent = Math.round((pitch - 1) * 100);
+    const escaped = text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    const ssml = `<speak version="1.0" xml:lang="ja-JP"><voice name="${voiceName}"><prosody rate="${ratePercent >= 0 ? "+" : ""}${ratePercent}%" pitch="${pitchPercent >= 0 ? "+" : ""}${pitchPercent}%">${escaped}</prosody></voice></speak>`;
+    const res = await fetch(`https://${region}.tts.speech.microsoft.com/cognitiveservices/v1`, {
+        method: "POST",
+        headers: {
+            "Ocp-Apim-Subscription-Key": apiKey,
+            "Content-Type": "application/ssml+xml",
+            "X-Microsoft-OutputFormat": "audio-16khz-32kbitrate-mono-mp3",
+        },
+        body: ssml,
+    });
+    if (!res.ok) {
+        const errText = await res.text().catch(() => "");
+        throw new Error(`Azure TTSエラー (${res.status}): ${errText || res.statusText}`);
+    }
+    return await res.blob();
+}
+// --- 声の使い分けを確認するためのサンプル文（女性3人・男性2人が登場する会話） ---
+const SAMPLE_TEXT_MULTI_FEMALE = `放課後の喫茶店は、いつものように賑やかだった。窓際の席で、美咲と真理子と由香が向かい合って座っている。
+
+「ねえ、聞いた? 今度の文化祭のことなんだけど」と美咲が身を乗り出して言った。
+「聞いた聞いた。うちのクラス、また模擬店やるんでしょ」真理子がため息まじりに答えた。
+由香はメニューをめくりながら、のんびりとした口調で言った。
+「わたしはクレープ屋さんがいいなあ。去年も好評だったし」
+「クレープかあ、準備が大変なんだよね」美咲は少し困った顔をした。
+
+そこへ、後ろの席から声をかけてきたのは太郎だった。
+「おい、お前ら文化祭の話してるだろ。うちのクラスは焼きそばに決まったぞ」
+「太郎、盗み聞きはよくないよ」真理子が笑いながらたしなめた。
+太郎の隣に座っていた健二も会話に加わってきた。
+「まあまあ、太郎はいつもそうだから。それより、三人はどのクラス代表になったんだ?」
+「わたしとみさきちゃんが代表だよ」由香が答えた。
+「じゃあ真理子は?」
+「わたしは裏方担当。人前に出るのは苦手だから」
+
+美咲はコーヒーを一口飲んでから、話を続けた。
+「代表決めるの、結構大変だったんだから。誰もやりたがらなくてさ」
+「わかるわかる」と真理子がうなずいた。
+太郎はにやりと笑って言った。
+「じゃあ俺たちのクラスも見に来いよな。焼きそば、たくさん作るからさ」
+「行く行く! 楽しみにしてる」由香が明るい声で答えた。
+
+窓の外では、夕暮れの空が少しずつ色を変えていった。五人の笑い声は、いつまでも店の中に響いていた。`;
+// --- EPUBファイルを読み込んで章ごとのテキストに分解する ---
+async function parseEpub(file) {
+    var _a, _b;
+    const zip = await JSZip.loadAsync(file);
+    const containerXml = await zip.file("META-INF/container.xml").async("string");
+    const containerDoc = new DOMParser().parseFromString(containerXml, "application/xml");
+    const opfPath = (_a = containerDoc.querySelector("rootfile")) === null || _a === void 0 ? void 0 : _a.getAttribute("full-path");
+    if (!opfPath)
+        throw new Error("OPFファイルが見つかりません");
+    const opfXml = await zip.file(opfPath).async("string");
+    const opfDoc = new DOMParser().parseFromString(opfXml, "application/xml");
+    const opfDir = opfPath.includes("/") ? opfPath.slice(0, opfPath.lastIndexOf("/") + 1) : "";
+    const manifest = {};
+    opfDoc.querySelectorAll("manifest > item").forEach((item) => {
+        const id = item.getAttribute("id");
+        const href = item.getAttribute("href");
+        if (id && href)
+            manifest[id] = opfDir + decodeURIComponent(href);
+    });
+    const spineIds = [];
+    opfDoc.querySelectorAll("spine > itemref").forEach((item) => {
+        const idref = item.getAttribute("idref");
+        if (idref)
+            spineIds.push(idref);
+    });
+    const chapters = [];
+    for (const id of spineIds) {
+        const path = manifest[id];
+        if (!path)
+            continue;
+        const zipFile = zip.file(path);
+        if (!zipFile)
+            continue;
+        const html = await zipFile.async("string");
+        const doc = new DOMParser().parseFromString(html, "text/html");
+        // script/styleを除去
+        doc.querySelectorAll("script, style").forEach((el) => el.remove());
+        // ルビ（ふりがな）の対応表を作る：読み上げ時にこの読みを優先して使う
+        const rubyMap = {};
+        doc.querySelectorAll("ruby").forEach((rubyEl) => {
+            const clone = rubyEl.cloneNode(true);
+            clone.querySelectorAll("rt, rp").forEach((el) => el.remove());
+            const base = (clone.textContent || "").trim();
+            // 1つのruby要素内に複数のrt（文字ごとのふりがな）が入っている場合があるため、
+            // 最初の1つだけでなく、すべてのrtを連結して完全な読みを作る
+            // （例：「虎視眈々」に4つのrt「こ」「し」「たん」「たん」がある場合、
+            //   最初の1つだけ拾うと「こ」になってしまうバグがあった）
+            const rtEls = rubyEl.querySelectorAll("rt");
+            const reading = Array.from(rtEls).map((el) => (el.textContent || "").trim()).join("");
+            // 1文字の漢字は多音字（複数の読み方）のことが多く、全文一括置換すると
+            // 無関係な単語（例：「写真」の「真」）まで誤って読み替えてしまうため除外する
+            if (base && reading && base.length >= 2 && !rubyMap[base])
+                rubyMap[base] = reading;
+        });
+        // 表示用テキストは漢字のまま（rt/rpだけ除去して二重表記を防ぐ）
+        doc.querySelectorAll("rt, rp").forEach((el) => el.remove());
+        const text = (((_b = doc.body) === null || _b === void 0 ? void 0 : _b.textContent) || "").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+        if (!text)
+            continue;
+        const heading = doc.querySelector("h1, h2, h3");
+        const title = ((heading === null || heading === void 0 ? void 0 : heading.textContent) || path.split("/").pop() || `セクション ${chapters.length + 1}`).trim();
+        chapters.push({ title, text, rubyMap });
+    }
+    return chapters;
+}
+// --- TXTファイルを読み込んで章ごとのテキストに分解する ---
+// 「第一章」「第1章」のような見出し行があればそこで章を分け、なければファイル全体を1章として扱う
+async function parseTxt(file) {
+    const raw = await file.text();
+    const text = raw.replace(/\r\n/g, "\n").trim();
+    const lines = text.split("\n");
+    const chapterHeadingRe = /^第[0-90-9一二三四五六七八九十百千]+[章話部編]/;
+    const chapters = [];
+    let currentTitle = "";
+    let currentLines = [];
+    const pushCurrent = () => {
+        const body = currentLines.join("\n").trim();
+        if (body) {
+            chapters.push({
+                title: currentTitle || `セクション ${chapters.length + 1}`,
+                text: body,
+                rubyMap: {}, // TXTにはルビ情報がないため空
+            });
+        }
+    };
+    for (const line of lines) {
+        if (chapterHeadingRe.test(line.trim())) {
+            pushCurrent();
+            currentTitle = line.trim();
+            currentLines = [];
+        }
+        else {
+            currentLines.push(line);
+        }
+    }
+    pushCurrent();
+    // 章見出しが見つからなかった場合は、ファイル全体を1章として扱う
+    if (chapters.length === 0 && text) {
+        chapters.push({ title: file.name.replace(/\.txt$/i, ""), text, rubyMap: {} });
+    }
+    return chapters;
+}
+function chunkText(text, maxChars) {
+    if (text.length <= maxChars)
+        return [text];
+    const paragraphs = text.split(/\n+/);
+    const chunks = [];
+    let current = "";
+    for (const p of paragraphs) {
+        if ((current + "\n" + p).length > maxChars && current) {
+            chunks.push(current);
+            current = p;
+        }
+        else {
+            current = current ? current + "\n" + p : p;
+        }
+    }
+    if (current)
+        chunks.push(current);
+    return chunks;
+}
+// --- Gemini APIでセリフの話者を推定する ---
+async function analyzeWithGemini(text, apiKey, knownNames, rubyHints) {
+    var _a, _b, _c, _d, _e, _f, _g;
+    const namesHint = knownNames.length > 0
+        ? `これまでに登場した人物: ${knownNames.join("、")}。同一人物なら同じ表記で統一してください。`
+        : "";
+    const rubyHintKeys = Object.keys(rubyHints).filter((k) => text.includes(k));
+    const rubyHintText = rubyHintKeys.length > 0
+        ? `\n作者がこの章のどこかで指定したルビ（参考情報。この文章中に同じ表記が出てくる場合、まずこの読みが文脈に合っているか確認し、合っていればそのままreadingsに含める。もし文脈上あきらかに違う読み方をすべき箇所であれば、ルビではなくあなたが判断した読みをreadingsに含めること）:\n${rubyHintKeys.map((k) => `${k}＝${rubyHints[k]}`).join("、")}\n`
+        : "";
+    const prompt = `以下は日本語の小説の一節です。この文章を「地の文」と「セリフ」に分割し、それぞれのセリフについて話者を推定してください。
+
+ルール:
+- 「」で囲まれた部分はセリフとして扱う
+- 地の文とセリフを交互に、原文の順序通りに分割する（原文の文字を一切削ったり変えたりしない。改行や句読点も保持する）
+- 話者名は文脈から推定した登場人物名。地の文の話者は必ず "地の文" とする
+- 話者がどうしても判別できないセリフは "不明" とする
+- 各セリフについて、話者の性別を "male"（男性）"female"（女性）"unknown"（不明・判別不能）のいずれかで推定する。地の文は "unknown" とする
+- 各セグメントについて、readings フィールドに、そのセグメント本文に含まれる漢字表現（熟語・人名・地名・1文字の名詞なども含む）を基本的にすべて、「その箇所の文脈における」正しい読み（ひらがな）とペアで列挙すること。同じ表記でも別のセグメントでは別の読みになりうるので、必ずそのセグメントの文脈だけを見て判断すること（例：「家」は「いえ」「うち」「か」など文脈で読みが変わる）。作者指定のルビがある単語がこのセグメントに含まれる場合も、必ずreadingsに含め、文脈に合っているか確認すること。また、漢数字で数を表している箇所は、1文字ずつ読むのではなく正しい数として読んだ場合の読み方（例：「一五〇万」→「ひゃくごじゅうまん」）を、数字と助数詞（人・本・月・回など）の組み合わせで促音便・連濁などの音変化が起きるもの（例：「一ヵ月」→「いっかげつ」、「三人」→「さんにん」、「六本」→「ろっぽん」）も、それぞれreadingsに含めること。
+  文脈から判断し、その箇所ではどう読むのが最も自然かを、あなたの最善の判断でreadingsに含めること（間違いを恐れて空欄にするより、その場での最善の判断を答える方が、標準の読み上げに任せるより有益であることが多い）。同じ表記の単語がセグメントごとに異なる読みで登場することもあるので、必ずそのセグメントの文脈だけを見て毎回判断すること。該当がなければ空配列でよい
+${rubyHintText}${namesHint}
+
+文章:
+${text}`;
+    const schema = {
+        type: "object",
+        properties: {
+            segments: {
+                type: "array",
+                items: {
+                    type: "object",
+                    properties: {
+                        text: { type: "string" },
+                        speaker: { type: "string" },
+                        gender: { type: "string", enum: ["male", "female", "unknown"] },
+                        readings: {
+                            type: "array",
+                            items: {
+                                type: "object",
+                                properties: {
+                                    term: { type: "string" },
+                                    reading: { type: "string" },
+                                },
+                                required: ["term", "reading"],
+                            },
+                        },
+                    },
+                    required: ["text", "speaker", "gender", "readings"],
+                },
+            },
+        },
+        required: ["segments"],
+    };
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${encodeURIComponent(apiKey)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            contents: [{ role: "user", parts: [{ text: prompt }] }],
+            generationConfig: {
+                responseMimeType: "application/json",
+                responseSchema: schema,
+                // temperatureを低くして、創造的な言い換えではなく、より確実性の高い（機械的な）
+                // 回答を優先させる。読み仮名の判定は「正解が1つ」であることが多いタスクのため
+                temperature: 0.1,
+                // 出力トークン数の上限を明示的に指定しておく。指定しないと、モデル側のデフォルト値
+                // （65,536より小さい可能性がある）で途中で打ち切られ、不完全なJSONが返って
+                // 解析エラーになることがあるため、gemini-3.6-flashの上限まで確保しておく
+                maxOutputTokens: 65536,
+            },
+        }),
+    });
+    const data = await res.json();
+    if (data.error)
+        throw new Error(data.error.message || "Gemini APIエラー");
+    const textOut = (_e = (_d = (_c = (_b = (_a = data.candidates) === null || _a === void 0 ? void 0 : _a[0]) === null || _b === void 0 ? void 0 : _b.content) === null || _c === void 0 ? void 0 : _c.parts) === null || _d === void 0 ? void 0 : _d[0]) === null || _e === void 0 ? void 0 : _e.text;
+    if (!textOut)
+        throw new Error("応答が空でした");
+    const finishReason = (_g = (_f = data.candidates) === null || _f === void 0 ? void 0 : _f[0]) === null || _g === void 0 ? void 0 : _g.finishReason;
+    let parsed;
+    try {
+        parsed = JSON.parse(textOut);
+    }
+    catch (parseErr) {
+        // 出力が途中で打ち切られた場合、不完全なJSONになってここで失敗する。
+        // finishReasonが"MAX_TOKENS"ならその可能性が高いので、原因が分かるメッセージにする
+        if (finishReason === "MAX_TOKENS") {
+            throw new Error("出力が長すぎて途中で打ち切られました。チャンクサイズを小さくして再解析してみてください。");
+        }
+        throw new Error("応答のJSON解析に失敗しました: " + (parseErr.message || parseErr));
+    }
+    const segments = (parsed.segments || []).map((s) => {
+        const filteredReadings = (s.readings || []).filter((r) => r.term && r.reading);
+        // AIの読みが、作者指定のルビ（rubyHints）と食い違っていないか、ここでクライアント側でチェックする
+        // （追加のAPI呼び出しは不要。手元にあるルビ情報とAIの回答を突き合わせるだけ）
+        const rubyConflicts = [];
+        filteredReadings.forEach((r) => {
+            const rubyReading = rubyHints[r.term];
+            if (rubyReading && rubyReading !== r.reading) {
+                rubyConflicts.push({ term: r.term, rubyReading, aiReading: r.reading });
+            }
+        });
+        return {
+            text: s.text,
+            speaker: s.speaker,
+            gender: s.gender,
+            readings: filteredReadings,
+            rubyConflicts,
+        };
+    });
+    const newNames = [...knownNames];
+    const genderMap = {};
+    segments.forEach((s) => {
+        if (s.speaker !== "地の文" && s.speaker !== "不明") {
+            if (!newNames.includes(s.speaker))
+                newNames.push(s.speaker);
+            if (s.gender && s.gender !== "unknown")
+                genderMap[s.speaker] = s.gender;
+        }
+    });
+    return { segments, newNames, genderMap };
+}
+// --- ルビ対応表を使って、読み上げ用テキストの漢字部分を読みに置き換える ---
+// 注意: 1文字キーのフィルタはここでは行わない。章全体・アプリ全体で使い回す辞書
+// （EPUBルビ・手動辞書）は呼び出し側で1文字を除外してから渡すこと。
+// セグメント単位でAIが判断した読みは、その1文だけに閉じた判断なので1文字でも安全。
+function applyRubyForSpeech(text, rubyMap) {
+    const keys = Object.keys(rubyMap).sort((a, b) => b.length - a.length);
+    if (keys.length === 0)
+        return text;
+    const isKanji = (ch) => !!ch && /[一-龠]/.test(ch);
+    let result = "";
+    let i = 0;
+    outer: while (i < text.length) {
+        for (const key of keys) {
+            if (text.startsWith(key, i)) {
+                const before = text[i - 1];
+                // 前が漢字と地続きの場合のみスキップする（もっと大きな熟語の一部である可能性が高いため）。
+                // 後ろは「様・君・殿」等の敬称が漢字であることが多く、そこで弾くと
+                // 「大村様」のような一番読み上げたいケースがブロックされてしまうためチェックしない。
+                if (!isKanji(before)) {
+                    result += rubyMap[key];
+                    i += key.length;
+                    continue outer;
+                }
+            }
+        }
+        result += text[i];
+        i += 1;
+    }
+    return result;
+}
+// --- 音声名から男性/女性らしさを判定する（iOS/Windows/Chromeの代表的な音声名に対応） ---
+const MALE_VOICE_HINTS = ["otoya", "hattori", "ichiro", "male", "男性"];
+const FEMALE_VOICE_HINTS = ["kyoko", "o-ren", "oren", "female", "女性", "haruka", "nanami", "sayaka", "ayumi"];
+function classifyVoiceGender(voice) {
+    const name = (voice.name || "").toLowerCase();
+    const voiceURI = (voice.voiceURI || "").toLowerCase();
+    const combined = name + " " + voiceURI;
+    if (MALE_VOICE_HINTS.some((h) => combined.includes(h)))
+        return "male";
+    if (FEMALE_VOICE_HINTS.some((h) => combined.includes(h)))
+        return "female";
+    return "unknown";
+}
+function pickVoicesByGender(voices) {
+    const jaVoices = voices.filter((v) => v.lang && v.lang.startsWith("ja"));
+    const pool = jaVoices.length > 0 ? jaVoices : voices;
+    const malePool = pool.filter((v) => classifyVoiceGender(v) === "male");
+    const femalePool = pool.filter((v) => classifyVoiceGender(v) === "female");
+    const fallback = pool[0];
+    return { male: malePool[0] || fallback, female: femalePool[0] || fallback, malePool, femalePool, fallback };
+}
+// --- 「──」「――」のようなダッシュ記号や「……」のような三点リーダーを
+//     無音の間（ポーズ）に変換するため、その箇所でテキストを分割する ---
+function splitForPause(text) {
+    // 全角ダッシュ・罫線素片が2つ以上連続、または三点リーダー(…)が1つ以上連続している箇所を区切りとみなす
+    return text.split(/(?:[─―—–]{2,})|(?:…+)/);
+}
+class ErrorBoundary extends React.Component {
+    constructor(props) {
+        super(props);
+        this.state = { error: null };
+    }
+    static getDerivedStateFromError(error) {
+        return { error };
+    }
+    componentDidCatch(error, info) {
+        console.error("KoedokuError:", error, info);
+    }
+    render() {
+        if (this.state.error) {
+            return (React.createElement("div", { style: { fontFamily: "sans-serif", padding: 24, background: "#fff5f0", color: "#8a3f2a" } },
+                React.createElement("h2", { style: { fontSize: 16 } }, "\u30A8\u30E9\u30FC\u304C\u767A\u751F\u3057\u307E\u3057\u305F"),
+                React.createElement("pre", { style: { whiteSpace: "pre-wrap", fontSize: 12, background: "#fffdf8", padding: 12, borderRadius: 8, border: "1px solid #e0c8ba" } }, String(this.state.error && (this.state.error.stack || this.state.error.message || this.state.error)))));
+        }
+        return this.props.children;
+    }
+}
+function AppInner() {
+    const [apiKey, setApiKey] = useState(() => {
+        try {
+            return localStorage.getItem("koedoku_gemini_key") || "";
+        }
+        catch (e) {
+            return "";
+        }
+    });
+    const [rememberKey, setRememberKey] = useState(true);
+    const [ttsEngine, setTtsEngine] = useState(() => {
+        try {
+            return localStorage.getItem("koedoku_tts_engine") || "browser";
+        }
+        catch (e) {
+            return "browser";
+        }
+    });
+    const [azureKey, setAzureKey] = useState(() => {
+        try {
+            return localStorage.getItem("koedoku_azure_key") || "";
+        }
+        catch (e) {
+            return "";
+        }
+    });
+    const [azureRegion, setAzureRegion] = useState(() => {
+        try {
+            return localStorage.getItem("koedoku_azure_region") || "japaneast";
+        }
+        catch (e) {
+            return "japaneast";
+        }
+    });
+    const [azureError, setAzureError] = useState("");
+    const [customReadings, setCustomReadings] = useState(() => {
+        try {
+            const saved = localStorage.getItem("koedoku_custom_readings");
+            return saved ? JSON.parse(saved) : {};
+        }
+        catch (e) {
+            return {};
+        }
+    });
+    const [newTerm, setNewTerm] = useState("");
+    const [showVoiceChecker, setShowVoiceChecker] = useState(false);
+    const [newReading, setNewReading] = useState("");
+    const [epubFile, setEpubFile] = useState(null);
+    // --- 本ごとに個別のデータを保存する仕組み。キーは本の識別子（ファイル名など）で、
+    //     複数の本の解析結果を同時に保持できるようにする（本を切り替えても消えない） ---
+    const loadAllBooks = () => {
+        try {
+            const saved = localStorage.getItem("koedoku_books");
+            return saved ? JSON.parse(saved) : {};
+        }
+        catch (e) {
+            return {};
+        }
+    };
+    const saveBookData = (bookId, data) => {
+        try {
+            const all = loadAllBooks();
+            all[bookId] = { ...(all[bookId] || {}), ...data, lastOpened: Date.now() };
+            localStorage.setItem("koedoku_books", JSON.stringify(all));
+        }
+        catch (e) {
+            // 容量オーバーなどで失敗しても、アプリの動作自体には影響させない
+        }
+    };
+    const deleteBookChapterCache = (bookId, chapterIdx) => {
+        try {
+            const all = loadAllBooks();
+            if (all[bookId] && all[bookId].chapterSegmentsCache) {
+                delete all[bookId].chapterSegmentsCache[chapterIdx];
+                localStorage.setItem("koedoku_books", JSON.stringify(all));
+            }
+        }
+        catch (e) { }
+    };
+    // 最後に開いていた本を起動時に復元する
+    const lastBookId = (() => {
+        try {
+            return localStorage.getItem("koedoku_last_book") || null;
+        }
+        catch (e) {
+            return null;
+        }
+    })();
+    const restoredBook = lastBookId ? (loadAllBooks()[lastBookId] || null) : null;
+    const [currentBookId, setCurrentBookId] = useState(lastBookId);
+    const [chapters, setChapters] = useState((restoredBook === null || restoredBook === void 0 ? void 0 : restoredBook.chapters) || null);
+    const [parsingEpub, setParsingEpub] = useState(false);
+    const [epubError, setEpubError] = useState("");
+    const [selectedChapter, setSelectedChapter] = useState(null);
+    const [knownNames, setKnownNames] = useState((restoredBook === null || restoredBook === void 0 ? void 0 : restoredBook.knownNames) || []);
+    const [speakerGender, setSpeakerGender] = useState((restoredBook === null || restoredBook === void 0 ? void 0 : restoredBook.speakerGender) || {});
+    const [speakerVoiceIndex, setSpeakerVoiceIndex] = useState((restoredBook === null || restoredBook === void 0 ? void 0 : restoredBook.speakerVoiceIndex) || {});
+    const maleCounterRef = useRef((restoredBook === null || restoredBook === void 0 ? void 0 : restoredBook.maleCounter) || 0);
+    const femaleCounterRef = useRef((restoredBook === null || restoredBook === void 0 ? void 0 : restoredBook.femaleCounter) || 0);
+    // 章ごとに解析済みのセグメントをキャッシュしておく（キー: 章のインデックス）
+    const [chapterSegmentsCache, setChapterSegmentsCache] = useState((restoredBook === null || restoredBook === void 0 ? void 0 : restoredBook.chapterSegmentsCache) || {});
+    const [segments, setSegments] = useState(null);
+    const [speakerMap, setSpeakerMap] = useState((restoredBook === null || restoredBook === void 0 ? void 0 : restoredBook.speakerMap) || {});
+    const [analyzing, setAnalyzing] = useState(false);
+    const [analyzeProgress, setAnalyzeProgress] = useState("");
+    const [analyzeError, setAnalyzeError] = useState("");
+    const [playState, setPlayState] = useState("stopped");
+    const [speedMultiplier, setSpeedMultiplier] = useState(1.0);
+    const [currentIdx, setCurrentIdx] = useState(-1);
+    const [voices, setVoices] = useState([]);
+    const [speechSupported, setSpeechSupported] = useState(true);
+    const speechCheckedRef = useRef(false);
+    const stopFlagRef = useRef(false);
+    const playGenerationRef = useRef(0);
+    const currentAudioRef = useRef(null);
+    const audioUnlockedRef = useRef(false);
+    // これまでに作成した全てのAudio要素を記録しておく（1つだけでなく全部）。
+    // 何らかの理由で複数の音声が同時に作られてしまっても、停止ボタンで確実に
+    // 全部止められるようにするための安全策（currentAudioRefだけでは取りこぼす可能性があるため）
+    const allAudiosRef = useRef([]);
+    const saveKey = (key, remember) => {
+        setApiKey(key);
+        try {
+            if (remember && key)
+                localStorage.setItem("koedoku_gemini_key", key);
+            else
+                localStorage.removeItem("koedoku_gemini_key");
+        }
+        catch (e) { }
+    };
+    const saveTtsEngine = (engine) => {
+        setTtsEngine(engine);
+        try {
+            localStorage.setItem("koedoku_tts_engine", engine);
+        }
+        catch (e) { }
+    };
+    const saveAzureKey = (key) => {
+        setAzureKey(key);
+        try {
+            localStorage.setItem("koedoku_azure_key", key);
+        }
+        catch (e) { }
+    };
+    const saveAzureRegion = (region) => {
+        setAzureRegion(region);
+        try {
+            localStorage.setItem("koedoku_azure_region", region);
+        }
+        catch (e) { }
+    };
+    const persistCustomReadings = (map) => {
+        try {
+            localStorage.setItem("koedoku_custom_readings", JSON.stringify(map));
+        }
+        catch (e) { }
+    };
+    // --- 本の構造・話者情報・解析済みセグメントをまとめてlocalStorageに保存する ---
+    // （ページを閉じたり再読み込みしたりしても、再度AIに解析させずに済むようにするため）
+    const persistSession = (overrides = {}) => {
+        const bookId = overrides.bookId || currentBookId;
+        if (!bookId)
+            return;
+        const payload = {
+            chapters,
+            knownNames,
+            speakerGender,
+            speakerVoiceIndex,
+            speakerMap,
+            chapterSegmentsCache,
+            maleCounter: maleCounterRef.current,
+            femaleCounter: femaleCounterRef.current,
+            ...overrides,
+        };
+        delete payload.bookId;
+        saveBookData(bookId, payload);
+        try {
+            localStorage.setItem("koedoku_last_book", bookId);
+        }
+        catch (e) { }
+    };
+    const addCustomReading = () => {
+        const term = newTerm.trim();
+        const reading = newReading.trim();
+        if (!term || !reading)
+            return;
+        const next = { ...customReadings, [term]: reading };
+        setCustomReadings(next);
+        persistCustomReadings(next);
+        setNewTerm("");
+        setNewReading("");
+    };
+    const removeCustomReading = (term) => {
+        const next = { ...customReadings };
+        delete next[term];
+        setCustomReadings(next);
+        persistCustomReadings(next);
+    };
+    const ensureSpeechReady = () => {
+        if (speechCheckedRef.current)
+            return speechSupported;
+        speechCheckedRef.current = true;
+        try {
+            if (typeof window === "undefined" || !("speechSynthesis" in window)) {
+                setSpeechSupported(false);
+                return false;
+            }
+            const list = window.speechSynthesis.getVoices() || [];
+            setVoices(list);
+            window.speechSynthesis.onvoiceschanged = () => {
+                try {
+                    setVoices(window.speechSynthesis.getVoices() || []);
+                }
+                catch (e) { }
+            };
+            return true;
+        }
+        catch (e) {
+            setSpeechSupported(false);
+            return false;
+        }
+    };
+    const jaVoice = voices.find((v) => v.lang && v.lang.startsWith("ja")) || voices[0];
+    const handleEpubUpload = async (file) => {
+        setEpubFile(file);
+        setParsingEpub(true);
+        setEpubError("");
+        setChapters(null);
+        setSelectedChapter(null);
+        setSegments(null);
+        // ファイル名を本の識別子として使う。以前読み込んだことがある本なら、
+        // 解析済みのデータをそのまま復元し、再度AIに解析させないようにする。
+        const bookId = "file:" + file.name;
+        setCurrentBookId(bookId);
+        const existing = loadAllBooks()[bookId];
+        if (existing && existing.chapters) {
+            setChapters(existing.chapters);
+            setKnownNames(existing.knownNames || []);
+            setSpeakerGender(existing.speakerGender || {});
+            setSpeakerMap(existing.speakerMap || {});
+            setSpeakerVoiceIndex(existing.speakerVoiceIndex || {});
+            setChapterSegmentsCache(existing.chapterSegmentsCache || {});
+            maleCounterRef.current = existing.maleCounter || 0;
+            femaleCounterRef.current = existing.femaleCounter || 0;
+            try {
+                localStorage.setItem("koedoku_last_book", bookId);
+            }
+            catch (e) { }
+            setParsingEpub(false);
+            return;
+        }
+        // 初めて読み込む本の場合のみ、話者情報などを空の状態から始める
+        setKnownNames([]);
+        setSpeakerGender({});
+        setSpeakerMap({});
+        setSpeakerVoiceIndex({});
+        setChapterSegmentsCache({});
+        maleCounterRef.current = 0;
+        femaleCounterRef.current = 0;
+        try {
+            const isTxt = /\.txt$/i.test(file.name);
+            const ch = isTxt ? await parseTxt(file) : await parseEpub(file);
+            if (ch.length === 0)
+                throw new Error("章が見つかりませんでした");
+            setChapters(ch);
+            persistSession({
+                bookId,
+                chapters: ch,
+                knownNames: [],
+                speakerGender: {},
+                speakerVoiceIndex: {},
+                speakerMap: {},
+                chapterSegmentsCache: {},
+                maleCounter: 0,
+                femaleCounter: 0,
+            });
+        }
+        catch (e) {
+            console.error(e);
+            setEpubError("EPUBの読み込みに失敗しました: " + (e.message || e));
+        }
+        finally {
+            setParsingEpub(false);
+        }
+    };
+    const analyzeChapter = async (chapterIdx) => {
+        if (!chapters)
+            return;
+        // 既に解析済みの章なら、APIを呼ばずキャッシュから復元する
+        if (chapterSegmentsCache[chapterIdx]) {
+            setSelectedChapter(chapterIdx);
+            setSegments(chapterSegmentsCache[chapterIdx]);
+            stopPlayback();
+            return;
+        }
+        if (!apiKey.trim()) {
+            setAnalyzeError("Gemini APIキーを入力してください");
+            return;
+        }
+        setSelectedChapter(chapterIdx);
+        setAnalyzing(true);
+        setAnalyzeError("");
+        setSegments(null);
+        stopPlayback();
+        try {
+            const chapter = chapters[chapterIdx];
+            const chunks = chunkText(chapter.text, 12000);
+            let allSegments = [];
+            let names = knownNames;
+            let genders = { ...speakerGender };
+            let voiceIdx = { ...speakerVoiceIndex };
+            for (let i = 0; i < chunks.length; i++) {
+                setAnalyzeProgress(chunks.length > 1 ? `解析中… (${i + 1}/${chunks.length})` : "解析中…");
+                const result = await analyzeWithGemini(chunks[i], apiKey, names, chapter.rubyMap || {});
+                allSegments = allSegments.concat(result.segments);
+                names = result.newNames;
+                genders = { ...genders, ...result.genderMap };
+                // 新しく性別が判明した話者には、同性別内での通し番号を割り振る
+                // （これにより、女性キャラが複数いれば別々の女性声を、男性キャラが複数いれば別々の男性声を
+                //   自動的に割り当てられるようになる。端末側で使える声の数に応じて自動対応する）
+                Object.keys(result.genderMap).forEach((name) => {
+                    if (voiceIdx[name] === undefined) {
+                        const g = result.genderMap[name];
+                        if (g === "male") {
+                            voiceIdx[name] = maleCounterRef.current;
+                            maleCounterRef.current += 1;
+                        }
+                        else if (g === "female") {
+                            voiceIdx[name] = femaleCounterRef.current;
+                            femaleCounterRef.current += 1;
+                        }
+                    }
+                });
+            }
+            setKnownNames(names);
+            setSpeakerGender(genders);
+            setSpeakerVoiceIndex(voiceIdx);
+            const uniqueSpeakers = [];
+            allSegments.forEach((s) => {
+                if (s.speaker !== "地の文" && !uniqueSpeakers.includes(s.speaker))
+                    uniqueSpeakers.push(s.speaker);
+            });
+            let finalSpeakerMap = {};
+            setSpeakerMap((prev) => {
+                const next = { ...prev, "地の文": "narrator" };
+                uniqueSpeakers.forEach((sp, i) => {
+                    if (!next[sp])
+                        next[sp] = VOICE_PRESETS[(i % (VOICE_PRESETS.length - 1)) + 1].key;
+                });
+                finalSpeakerMap = next;
+                return next;
+            });
+            setSegments(allSegments);
+            // 解析結果をキャッシュに保存し、localStorageにも永続化する
+            // （ページを再読み込みしても、同じ章を再度AIに解析させずに済むようにするため）
+            setChapterSegmentsCache((prev) => {
+                const next = { ...prev, [chapterIdx]: allSegments };
+                persistSession({
+                    chapterSegmentsCache: next,
+                    knownNames: names,
+                    speakerGender: genders,
+                    speakerVoiceIndex: voiceIdx,
+                    speakerMap: finalSpeakerMap,
+                    maleCounter: maleCounterRef.current,
+                    femaleCounter: femaleCounterRef.current,
+                });
+                return next;
+            });
+        }
+        catch (e) {
+            console.error(e);
+            setAnalyzeError("解析に失敗しました: " + (e.message || e));
+        }
+        finally {
+            setAnalyzing(false);
+            setAnalyzeProgress("");
+        }
+    };
+    const presetFor = (speaker) => {
+        const key = speakerMap[speaker] || "narrator";
+        return VOICE_PRESETS.find((p) => p.key === key) || VOICE_PRESETS[0];
+    };
+    // これまでに作成された全てのAudio要素を、確実に止める（取りこぼし防止の安全策）
+    const stopAllAudios = () => {
+        allAudiosRef.current.forEach((a) => {
+            try {
+                a.pause();
+                a.currentTime = 0;
+                a.volume = 0;
+                a.src = "";
+            }
+            catch (e) { }
+        });
+        allAudiosRef.current = [];
+        currentAudioRef.current = null;
+    };
+    const stopPlayback = () => {
+        playGenerationRef.current += 1;
+        stopFlagRef.current = true;
+        try {
+            window.speechSynthesis && window.speechSynthesis.cancel();
+        }
+        catch (e) { }
+        // Azureモードで再生中・待機中のAudio要素を、記録している分すべて止める
+        stopAllAudios();
+        setPlayState("stopped");
+        setCurrentIdx(-1);
+    };
+    const playFrom = (startIdx) => {
+        if (!segments)
+            return;
+        if (!ensureSpeechReady())
+            return;
+        // iOS Safariの自動再生制限を回避するため、ユーザー操作の直後（このタイミングはボタンの
+        // クリックハンドラから同期的に呼ばれているため、ユーザー操作の文脈内とみなされる）に、
+        // 無音の音声を一度再生しておく。これにより、後続の自動再生（Azureの連続再生など）が
+        // 「ユーザー操作を伴わない」としてブロックされにくくなる。
+        if (ttsEngine === "azure" && !audioUnlockedRef.current) {
+            try {
+                const unlockAudio = new Audio(SILENT_AUDIO_DATA_URI);
+                unlockAudio.play().catch(() => { });
+                audioUnlockedRef.current = true;
+            }
+            catch (e) { }
+        }
+        // 新しい再生を「世代」として区別する。古い再生の完了/エラーコールバックが
+        // 非同期で遅れて発火しても、世代が変わっていれば何もしないようにして
+        // 「同じ箇所が二重に読まれる」競合状態を防ぐ。
+        playGenerationRef.current += 1;
+        const myGeneration = playGenerationRef.current;
+        stopFlagRef.current = false;
+        try {
+            window.speechSynthesis.cancel();
+        }
+        catch (e) {
+            setSpeechSupported(false);
+            return;
+        }
+        // 前の再生で使っていたAudio要素を、記録している分すべて止める
+        // （新しい再生の世代を開始する前に、古い再生が裏で流れ続けるのを防ぐ）
+        stopAllAudios();
+        setPlayState("playing");
+        const speakSeg = (idx) => {
+            if (playGenerationRef.current !== myGeneration)
+                return; // 世代が古くなっていれば中止
+            if (!segments || idx >= segments.length || stopFlagRef.current) {
+                if (playGenerationRef.current === myGeneration) {
+                    setPlayState("stopped");
+                    setCurrentIdx(-1);
+                }
+                return;
+            }
+            const seg = segments[idx];
+            const clean = (seg.text || "").trim();
+            setCurrentIdx(idx);
+            if (!clean) {
+                speakSeg(idx + 1);
+                return;
+            }
+            try {
+                const preset = presetFor(seg.speaker);
+                // AIが文脈込みで生成した読み上げ用テキストを使う。ただし元の文章と極端に食い違っている
+                // 場合（AIの生成ミス・ハルシネーションの可能性）は、安全のため原文にフォールバックする
+                // 元の表記に対して、単語単位の読み替え辞書（AI推定＋EPUBルビ＋手動辞書）を適用する
+                // 優先順位: 手動辞書 > このセグメントでAIが実際に判断した読み（ルビとの文脈照合済み） >
+                //          章全体のルビ辞書（AIがそのセグメントで言及しなかった単語のフォールバック）
+                const segReadings = {};
+                (seg.readings || []).forEach((r) => { segReadings[r.term] = r.reading; });
+                const chapterRubyMapRaw = (chapters && selectedChapter !== null) ? (chapters[selectedChapter].rubyMap || {}) : {};
+                // 章全体・アプリ全体で使い回す辞書（EPUBルビ・手動辞書）は、無関係な単語への誤爆を防ぐため
+                // 1文字キーを除外する。セグメント単位のAI判断（segReadings）はその1文だけの話なので対象外。
+                const filterLen2 = (m) => {
+                    const out = {};
+                    Object.keys(m).forEach((k) => { if (k.length >= 2)
+                        out[k] = m[k]; });
+                    return out;
+                };
+                const chapterRubyMap = filterLen2(chapterRubyMapRaw);
+                const filteredCustomReadings = filterLen2(customReadings);
+                const effectiveReadings = { ...chapterRubyMap, ...segReadings, ...filteredCustomReadings };
+                const spokenText = applyRubyForSpeech(clean, effectiveReadings);
+                // 音声一覧はReactのstateに頼らず、毎回ブラウザから直接取得する
+                // （stateの更新が非同期のため、初回再生時に古い/空の一覧を参照してしまうバグを防ぐ）
+                const freshVoices = window.speechSynthesis.getVoices() || [];
+                const genderVoices = pickVoicesByGender(freshVoices);
+                const freshJaVoice = freshVoices.find((v) => v.lang && v.lang.startsWith("ja")) || freshVoices[0];
+                const gender = speakerGender[seg.speaker];
+                const vIdx = speakerVoiceIndex[seg.speaker] || 0;
+                let chosenVoice;
+                if (gender === "male" && genderVoices.malePool.length > 0) {
+                    chosenVoice = genderVoices.malePool[vIdx % genderVoices.malePool.length];
+                }
+                else if (gender === "female" && genderVoices.femalePool.length > 0) {
+                    chosenVoice = genderVoices.femalePool[vIdx % genderVoices.femalePool.length];
+                }
+                else {
+                    chosenVoice = freshJaVoice;
+                }
+                // 「──」等の区切りごとに分割し、間に無音のポーズを挟みながら順番に読み上げる
+                const pieces = splitForPause(spokenText).filter((p) => p.trim().length > 0);
+                const piecesToSpeak = pieces.length > 0 ? pieces : [spokenText];
+                if (ttsEngine === "azure" && azureKey) {
+                    // --- Azure Cognitive Servicesで音声合成する場合 ---
+                    const azureVoiceName = gender === "male" ? AZURE_VOICE_POOL.male[vIdx % AZURE_VOICE_POOL.male.length] :
+                        gender === "female" ? AZURE_VOICE_POOL.female[vIdx % AZURE_VOICE_POOL.female.length] :
+                            AZURE_VOICE_POOL.narrator;
+                    const speakPieceAzure = async (pieceIdx) => {
+                        if (playGenerationRef.current !== myGeneration)
+                            return;
+                        if (pieceIdx >= piecesToSpeak.length) {
+                            if (playGenerationRef.current === myGeneration && !stopFlagRef.current)
+                                speakSeg(idx + 1);
+                            return;
+                        }
+                        const pieceText = piecesToSpeak[pieceIdx].trim();
+                        if (!pieceText) {
+                            speakPieceAzure(pieceIdx + 1);
+                            return;
+                        }
+                        try {
+                            const blob = await synthesizeAzureSpeech(pieceText, azureVoiceName, preset.rate * speedMultiplier, preset.pitch, azureKey, azureRegion);
+                            if (playGenerationRef.current !== myGeneration || stopFlagRef.current)
+                                return;
+                            const url = URL.createObjectURL(blob);
+                            const audio = new Audio(url);
+                            currentAudioRef.current = audio;
+                            // 取りこぼし防止のため、生成した全てのAudio要素をここに記録しておく
+                            allAudiosRef.current.push(audio);
+                            const cleanupAudio = () => {
+                                URL.revokeObjectURL(url);
+                                if (currentAudioRef.current === audio)
+                                    currentAudioRef.current = null;
+                                allAudiosRef.current = allAudiosRef.current.filter((a) => a !== audio);
+                            };
+                            audio.onended = () => {
+                                cleanupAudio();
+                                if (playGenerationRef.current !== myGeneration || stopFlagRef.current)
+                                    return;
+                                if (pieceIdx < piecesToSpeak.length - 1) {
+                                    setTimeout(() => speakPieceAzure(pieceIdx + 1), 250 / speedMultiplier);
+                                }
+                                else {
+                                    speakPieceAzure(pieceIdx + 1);
+                                }
+                            };
+                            audio.onerror = () => {
+                                cleanupAudio();
+                                if (playGenerationRef.current === myGeneration && !stopFlagRef.current)
+                                    speakPieceAzure(pieceIdx + 1);
+                            };
+                            try {
+                                await audio.play();
+                            }
+                            catch (playErr) {
+                                // iOSの自動再生制限などで失敗した場合、少し待ってからもう一度だけ試す
+                                await new Promise((r) => setTimeout(r, 150));
+                                if (playGenerationRef.current !== myGeneration || stopFlagRef.current) {
+                                    cleanupAudio();
+                                    return;
+                                }
+                                try {
+                                    await audio.play();
+                                }
+                                catch (retryErr) {
+                                    console.error("Azure再生リトライ失敗:", retryErr);
+                                    cleanupAudio();
+                                    // 1箇所の再生に失敗しても、全体を止めずに次に進む
+                                    if (playGenerationRef.current === myGeneration && !stopFlagRef.current)
+                                        speakPieceAzure(pieceIdx + 1);
+                                }
+                            }
+                        }
+                        catch (e) {
+                            console.error(e);
+                            setAzureError("Azure読み上げエラー: " + (e.message || e));
+                            setPlayState("stopped");
+                        }
+                    };
+                    speakPieceAzure(0);
+                    return;
+                }
+                // --- ブラウザ標準のWeb Speech APIで読み上げる場合 ---
+                const speakPiece = (pieceIdx) => {
+                    if (playGenerationRef.current !== myGeneration)
+                        return;
+                    if (pieceIdx >= piecesToSpeak.length) {
+                        if (playGenerationRef.current === myGeneration && !stopFlagRef.current)
+                            speakSeg(idx + 1);
+                        return;
+                    }
+                    const pieceText = piecesToSpeak[pieceIdx].trim();
+                    if (!pieceText) {
+                        speakPiece(pieceIdx + 1);
+                        return;
+                    }
+                    const utter = new SpeechSynthesisUtterance(pieceText);
+                    if (chosenVoice)
+                        utter.voice = chosenVoice;
+                    utter.lang = "ja-JP";
+                    utter.pitch = preset.pitch;
+                    utter.rate = preset.rate * speedMultiplier;
+                    utter.onend = () => {
+                        if (playGenerationRef.current !== myGeneration || stopFlagRef.current)
+                            return;
+                        if (pieceIdx < piecesToSpeak.length - 1) {
+                            // ダッシュ区切りの間は少し間を置く（速度に応じてポーズ時間も調整）
+                            setTimeout(() => speakPiece(pieceIdx + 1), 350 / speedMultiplier);
+                        }
+                        else {
+                            speakPiece(pieceIdx + 1);
+                        }
+                    };
+                    utter.onerror = () => {
+                        if (playGenerationRef.current === myGeneration && !stopFlagRef.current)
+                            speakPiece(pieceIdx + 1);
+                    };
+                    // 発話の直前にごく短い間を置く。連続してspeak()を呼ぶと、次の発話の
+                    // 先頭の音が音声エンジン側で欠けて聞こえることがあるため、その対策。
+                    setTimeout(() => {
+                        if (playGenerationRef.current !== myGeneration || stopFlagRef.current)
+                            return;
+                        window.speechSynthesis.speak(utter);
+                    }, 60);
+                };
+                speakPiece(0);
+            }
+            catch (e) {
+                setSpeechSupported(false);
+                setPlayState("stopped");
+            }
+        };
+        speakSeg(startIdx);
+    };
+    const togglePlay = () => {
+        if (!ensureSpeechReady())
+            return;
+        try {
+            if (playState === "playing") {
+                if (ttsEngine === "azure" && currentAudioRef.current) {
+                    currentAudioRef.current.pause();
+                }
+                else {
+                    window.speechSynthesis.pause();
+                }
+                setPlayState("paused");
+            }
+            else if (playState === "paused") {
+                if (ttsEngine === "azure" && currentAudioRef.current) {
+                    currentAudioRef.current.play().catch(() => { });
+                }
+                else {
+                    window.speechSynthesis.resume();
+                }
+                setPlayState("playing");
+            }
+            else {
+                playFrom(0);
+            }
+        }
+        catch (e) {
+            setSpeechSupported(false);
+        }
+    };
+    const cycleSpeaker = (name) => {
+        const keys = VOICE_PRESETS.map((p) => p.key);
+        const cur = speakerMap[name] || "narrator";
+        const next = keys[(keys.indexOf(cur) + 1) % keys.length];
+        setSpeakerMap((m) => ({ ...m, [name]: next }));
+    };
+    const uniqueSpeakerNames = segments ? Array.from(new Set(segments.map((s) => s.speaker || "不明"))) : [];
+    const testSpeakVoice = (voice) => {
+        try {
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance("これは" + voice.name + "の声です。大村様、こんにちは。");
+            u.voice = voice;
+            u.lang = voice.lang;
+            window.speechSynthesis.speak(u);
+        }
+        catch (e) { }
+    };
+    const allVoices = (typeof window !== "undefined" && "speechSynthesis" in window)
+        ? window.speechSynthesis.getVoices() || []
+        : [];
+    const jaVoicesList = allVoices.filter((v) => v.lang && v.lang.toLowerCase().startsWith("ja"));
+    return (React.createElement("div", { style: { fontFamily: "'Hiragino Mincho ProN', 'Yu Mincho', serif", background: "#f6f3ec", minHeight: "100vh", color: "#2b2620", padding: "20px 16px 60px" } },
+        React.createElement("div", { style: { maxWidth: 720, margin: "0 auto" } },
+            React.createElement("header", { style: { marginBottom: 20 } },
+                React.createElement("div", { style: { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, marginBottom: 6 } },
+                    React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10 } },
+                        React.createElement("span", { style: { fontSize: 20 } }, "\uD83D\uDCD6"),
+                        React.createElement("h1", { style: { fontSize: 20, fontWeight: 700, letterSpacing: "0.03em", margin: 0 } }, "\u58F0\u8AAD")),
+                    React.createElement("button", { onClick: () => setShowVoiceChecker((v) => !v), style: { padding: "6px 12px", borderRadius: 999, border: "1px solid #ddd6c7", background: showVoiceChecker ? "#f0e6d8" : "#fffdf8", color: "#8a6a3f", fontSize: 12, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" } }, "\uD83D\uDD0A \u97F3\u58F0\u3092\u78BA\u8A8D")),
+                React.createElement("p", { style: { fontSize: 12.5, color: "#8a8577", margin: 0, lineHeight: 1.6 } }, "EPUB\u30FBTXT\u30D5\u30A1\u30A4\u30EB\u3092\u8AAD\u307F\u8FBC\u307F\u3001\u7AE0\u3054\u3068\u306BAI\uFF08Gemini\uFF09\u304C\u8A71\u8005\u3092\u5224\u5B9A\u3057\u3066\u8AAD\u307F\u4E0A\u3052\u307E\u3059\u3002")),
+            showVoiceChecker && (React.createElement("div", { style: { marginBottom: 16, padding: 14, background: "#fffdf8", border: "1px solid #ddd6c7", borderRadius: 10 } },
+                React.createElement("p", { style: { fontSize: 12.5, color: "#8a8577", margin: "0 0 10px" } },
+                    "\u3053\u306E\u7AEF\u672B\u30FB\u30D6\u30E9\u30A6\u30B6\u3067\u4F7F\u3048\u308B\u65E5\u672C\u8A9E\u97F3\u58F0: ",
+                    React.createElement("b", { style: { color: "#c1533f" } }, jaVoicesList.length),
+                    " \u7A2E\u985E",
+                    jaVoicesList.length === 0 && React.createElement("span", { style: { color: "#c1533f" } }, "\uFF08\u8AAD\u307F\u8FBC\u307F\u4E2D\u306E\u5834\u5408\u306F\u5C11\u3057\u5F85\u3063\u3066\u304B\u3089\u958B\u304D\u76F4\u3057\u3066\u307F\u3066\u304F\u3060\u3055\u3044\uFF09")),
+                jaVoicesList.map((v, i) => (React.createElement("div", { key: i, style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderBottom: i < jaVoicesList.length - 1 ? "1px solid #eee6d8" : "none" } },
+                    React.createElement("div", { style: { fontSize: 13 } },
+                        v.name,
+                        React.createElement("span", { style: { fontSize: 11, color: "#8a8577", marginLeft: 8 } }, classifyVoiceGender(v) === "male" ? "♂ 男性推定" : classifyVoiceGender(v) === "female" ? "♀ 女性推定" : "不明")),
+                    React.createElement("button", { onClick: () => testSpeakVoice(v), style: { padding: "4px 10px", borderRadius: 999, border: "1px solid #ddd6c7", background: "#fff", color: "#2b2620", fontSize: 11, cursor: "pointer", fontFamily: "inherit" } }, "\u25B6 \u8A66\u8074")))))),
+            React.createElement("div", { style: { marginBottom: 16, padding: 14, background: "#fffdf8", border: "1px solid #ddd6c7", borderRadius: 10 } },
+                React.createElement("label", { style: { fontSize: 12, color: "#8a8577", display: "block", marginBottom: 4 } },
+                    "Gemini API\u30AD\u30FC\uFF08",
+                    React.createElement("a", { href: "https://aistudio.google.com/apikey", target: "_blank", style: { color: "#c1533f" } }, "aistudio.google.com\u3067\u7121\u6599\u53D6\u5F97"),
+                    "\uFF09"),
+                React.createElement("input", { type: "password", value: apiKey, onChange: (e) => saveKey(e.target.value, rememberKey), placeholder: "AIza...", style: { width: "100%", boxSizing: "border-box", padding: 10, borderRadius: 8, border: "1px solid #ddd6c7", fontFamily: "inherit", fontSize: 14, marginBottom: 6 } }),
+                React.createElement("label", { style: { fontSize: 12, color: "#8a8577", display: "flex", alignItems: "center", gap: 6 } },
+                    React.createElement("input", { type: "checkbox", checked: rememberKey, onChange: (e) => { setRememberKey(e.target.checked); saveKey(apiKey, e.target.checked); } }),
+                    "\u3053\u306E\u30D6\u30E9\u30A6\u30B6\u306B\u30AD\u30FC\u3092\u4FDD\u5B58\u3059\u308B")),
+            React.createElement("div", { style: { marginBottom: 16, padding: 14, background: "#fffdf8", border: "1px solid #ddd6c7", borderRadius: 10 } },
+                React.createElement("label", { style: { fontSize: 12, color: "#8a8577", display: "block", marginBottom: 8 } }, "\u8AAD\u307F\u4E0A\u3052\u30A8\u30F3\u30B8\u30F3"),
+                React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 10 } },
+                    React.createElement("button", { onClick: () => saveTtsEngine("browser"), style: {
+                            flex: 1, padding: "8px 10px", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5,
+                            border: ttsEngine === "browser" ? "2px solid #c1533f" : "1px solid #ddd6c7",
+                            background: ttsEngine === "browser" ? "#fff5f0" : "#fff", color: "#2b2620",
+                        } }, "\u30D6\u30E9\u30A6\u30B6\u6A19\u6E96\uFF08\u7121\u6599\uFF09"),
+                    React.createElement("button", { onClick: () => saveTtsEngine("azure"), style: {
+                            flex: 1, padding: "8px 10px", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontSize: 12.5,
+                            border: ttsEngine === "azure" ? "2px solid #c1533f" : "1px solid #ddd6c7",
+                            background: ttsEngine === "azure" ? "#fff5f0" : "#fff", color: "#2b2620",
+                        } }, "Azure\uFF08\u9AD8\u54C1\u8CEA\u30FB\u8981API\u30AD\u30FC\uFF09")),
+                ttsEngine === "azure" && (React.createElement("div", null,
+                    React.createElement("p", { style: { fontSize: 11.5, color: "#8a8577", margin: "0 0 8px", lineHeight: 1.6 } }, "Azure Speech Service\u306E\u30EA\u30BD\u30FC\u30B9\u3092\u4F5C\u6210\u3057\u3001\u30AD\u30FC\u3068\u30EA\u30FC\u30B8\u30E7\u30F3\u3092\u5165\u529B\u3057\u3066\u304F\u3060\u3055\u3044\u3002\u7121\u6599\u67A0\u306F\u6BCE\u670850\u4E07\u6587\u5B57\u3002\u652F\u6255\u3044\u60C5\u5831\u306E\u767B\u9332\u304C\u5FC5\u8981\u3067\u3059\u3002"),
+                    React.createElement("input", { type: "password", value: azureKey, onChange: (e) => saveAzureKey(e.target.value), placeholder: "Azure API\u30AD\u30FC", style: { width: "100%", boxSizing: "border-box", padding: 8, borderRadius: 8, border: "1px solid #ddd6c7", fontFamily: "inherit", fontSize: 13, marginBottom: 6 } }),
+                    React.createElement("input", { type: "text", value: azureRegion, onChange: (e) => saveAzureRegion(e.target.value), placeholder: "\u30EA\u30FC\u30B8\u30E7\u30F3\uFF08\u4F8B\uFF1Ajapaneast\uFF09", style: { width: "100%", boxSizing: "border-box", padding: 8, borderRadius: 8, border: "1px solid #ddd6c7", fontFamily: "inherit", fontSize: 13 } }),
+                    azureError && React.createElement("p", { style: { color: "#c1533f", fontSize: 12, marginTop: 8 } }, azureError)))),
+            React.createElement("div", { style: { marginBottom: 16, padding: 14, background: "#fffdf8", border: "1px solid #ddd6c7", borderRadius: 10 } },
+                React.createElement("label", { style: { fontSize: 12, color: "#8a8577", display: "block", marginBottom: 8 } }, "\u8AAD\u307F\u66FF\u3048\u8F9E\u66F8\uFF08\u8AA4\u8AAD\u3092\u624B\u52D5\u3067\u4FEE\u6B63\u30FB\u3053\u306E\u7AEF\u672B\u306B\u4FDD\u5B58\u3055\u308C\u307E\u3059\uFF09"),
+                React.createElement("div", { style: { display: "flex", gap: 6, marginBottom: 10 } },
+                    React.createElement("input", { type: "text", value: newTerm, onChange: (e) => setNewTerm(e.target.value), placeholder: "\u5358\u8A9E\uFF08\u4F8B\uFF1A\u5927\u6751\uFF09", style: { flex: 1, minWidth: 0, padding: 8, borderRadius: 8, border: "1px solid #ddd6c7", fontFamily: "inherit", fontSize: 13 } }),
+                    React.createElement("input", { type: "text", value: newReading, onChange: (e) => setNewReading(e.target.value), placeholder: "\u8AAD\u307F\uFF08\u4F8B\uFF1A\u304A\u304A\u3080\u3089\uFF09", style: { flex: 1, minWidth: 0, padding: 8, borderRadius: 8, border: "1px solid #ddd6c7", fontFamily: "inherit", fontSize: 13 } }),
+                    React.createElement("button", { onClick: addCustomReading, disabled: !newTerm.trim() || !newReading.trim(), style: { padding: "8px 14px", borderRadius: 8, border: "none", background: "#c1533f", color: "#fffdf8", fontSize: 13, cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" } }, "\u8FFD\u52A0")),
+                Object.keys(customReadings).length > 0 && (React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } }, Object.entries(customReadings).map(([term, reading]) => (React.createElement("span", { key: term, style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", borderRadius: 999, background: "#f0e6d8", fontSize: 12.5, color: "#2b2620" } },
+                    term,
+                    " \u2192 ",
+                    reading,
+                    React.createElement("button", { onClick: () => removeCustomReading(term), style: { border: "none", background: "none", cursor: "pointer", color: "#8a8577", fontSize: 13, padding: 0, lineHeight: 1 }, title: "\u524A\u9664" }, "\u00D7"))))))),
+            !chapters && (React.createElement("div", { style: { marginBottom: 16 } },
+                React.createElement("label", { style: {
+                        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                        padding: "36px 20px", borderRadius: 10, border: "2px dashed #ddd6c7", background: "#fffdf8",
+                        color: "#8a8577", fontSize: 14, cursor: "pointer", textAlign: "center",
+                    } },
+                    parsingEpub ? "読み込み中…" : "タップしてEPUB・TXTファイルを選択",
+                    React.createElement("input", { type: "file", accept: ".epub,.txt", style: { display: "none" }, onChange: (e) => { var _a; const f = (_a = e.target.files) === null || _a === void 0 ? void 0 : _a[0]; if (f)
+                            handleEpubUpload(f); } })),
+                epubError && React.createElement("p", { style: { color: "#c1533f", fontSize: 13, marginTop: 10 } }, epubError),
+                React.createElement("div", { style: { textAlign: "center", marginTop: 12 } },
+                    React.createElement("button", { onClick: () => {
+                            setEpubFile(null);
+                            setEpubError("");
+                            const bookId = "sample:female_cafe";
+                            setCurrentBookId(bookId);
+                            const existing = loadAllBooks()[bookId];
+                            if (existing && existing.chapters) {
+                                setChapters(existing.chapters);
+                                setSelectedChapter(null);
+                                setSegments(null);
+                                setKnownNames(existing.knownNames || []);
+                                setSpeakerGender(existing.speakerGender || {});
+                                setSpeakerMap(existing.speakerMap || {});
+                                setSpeakerVoiceIndex(existing.speakerVoiceIndex || {});
+                                setChapterSegmentsCache(existing.chapterSegmentsCache || {});
+                                maleCounterRef.current = existing.maleCounter || 0;
+                                femaleCounterRef.current = existing.femaleCounter || 0;
+                                try {
+                                    localStorage.setItem("koedoku_last_book", bookId);
+                                }
+                                catch (e) { }
+                                return;
+                            }
+                            const sampleChapters = [{ title: "サンプル：喫茶店にて", text: SAMPLE_TEXT_MULTI_FEMALE, rubyMap: {} }];
+                            setChapters(sampleChapters);
+                            setSelectedChapter(null);
+                            setSegments(null);
+                            setKnownNames([]);
+                            setSpeakerGender({});
+                            setSpeakerMap({});
+                            setSpeakerVoiceIndex({});
+                            setChapterSegmentsCache({});
+                            maleCounterRef.current = 0;
+                            femaleCounterRef.current = 0;
+                            persistSession({
+                                bookId,
+                                chapters: sampleChapters,
+                                knownNames: [],
+                                speakerGender: {},
+                                speakerVoiceIndex: {},
+                                speakerMap: {},
+                                chapterSegmentsCache: {},
+                                maleCounter: 0,
+                                femaleCounter: 0,
+                            });
+                        }, style: { padding: "8px 16px", borderRadius: 999, border: "1px solid #ddd6c7", background: "#fffdf8", color: "#8a6a3f", fontSize: 12.5, cursor: "pointer", fontFamily: "inherit" } }, "\uD83D\uDCDD \u5973\u6027\u30AD\u30E3\u30E9\u591A\u3081\u306E\u30B5\u30F3\u30D7\u30EB\u6587\u3067\u8A66\u3059\uFF08\u30D5\u30A1\u30A4\u30EB\u4E0D\u8981\uFF09")))),
+            chapters && selectedChapter === null && (React.createElement("div", null,
+                React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 } },
+                    React.createElement("span", { style: { fontSize: 13, color: "#8a8577" } }, epubFile === null || epubFile === void 0 ? void 0 :
+                        epubFile.name,
+                        "\uFF08",
+                        chapters.length,
+                        "\u7AE0\uFF09"),
+                    React.createElement("button", { onClick: () => {
+                            setChapters(null);
+                            setEpubFile(null);
+                        }, style: { padding: "6px 12px", borderRadius: 999, border: "1px solid #ddd6c7", background: "#fffdf8", color: "#8a8577", fontSize: 12, cursor: "pointer", fontFamily: "inherit" } }, "\u21BA \u5225\u306E\u30D5\u30A1\u30A4\u30EB")),
+                React.createElement("div", { style: { background: "#fffdf8", border: "1px solid #ddd6c7", borderRadius: 10, overflow: "hidden" } }, chapters.map((ch, i) => {
+                    const isCached = !!chapterSegmentsCache[i];
+                    return (React.createElement("div", { key: i, style: {
+                            display: "flex", alignItems: "center",
+                            borderBottom: i < chapters.length - 1 ? "1px solid #eee6d8" : "none",
+                        } },
+                        React.createElement("button", { onClick: () => analyzeChapter(i), style: {
+                                flex: 1, display: "block", textAlign: "left", padding: "14px 16px",
+                                border: "none", background: "transparent", cursor: "pointer", fontFamily: "inherit", fontSize: 15,
+                            } },
+                            isCached && React.createElement("span", { style: { color: "#7a9a6a", marginRight: 6 }, title: "\u89E3\u6790\u6E08\u307F" }, "\u25CF"),
+                            ch.title,
+                            " ",
+                            React.createElement("span", { style: { color: "#c2bba8", fontSize: 12 } },
+                                "\uFF08\u7D04",
+                                ch.text.length,
+                                "\u5B57\uFF09")),
+                        isCached && (React.createElement("button", { onClick: (e) => {
+                                e.stopPropagation();
+                                setChapterSegmentsCache((prev) => {
+                                    const next = { ...prev };
+                                    delete next[i];
+                                    if (currentBookId)
+                                        deleteBookChapterCache(currentBookId, i);
+                                    return next;
+                                });
+                                if (selectedChapter === i) {
+                                    setSelectedChapter(null);
+                                    setSegments(null);
+                                }
+                            }, title: "\u3053\u306E\u7AE0\u306E\u89E3\u6790\u30C7\u30FC\u30BF\u3092\u524A\u9664\u3059\u308B", style: {
+                                padding: "8px 14px", border: "none", background: "transparent",
+                                color: "#c1533f", cursor: "pointer", fontSize: 15,
+                            } }, "\uD83D\uDDD1"))));
+                })))),
+            selectedChapter !== null && analyzing && (React.createElement("div", { style: { padding: 30, textAlign: "center", color: "#8a8577" } }, analyzeProgress || "解析中…")),
+            selectedChapter !== null && !analyzing && analyzeError && (React.createElement("div", null,
+                React.createElement("p", { style: { color: "#c1533f", fontSize: 13, marginBottom: 10 } }, analyzeError),
+                React.createElement("button", { onClick: () => setSelectedChapter(null), style: { padding: "9px 16px", borderRadius: 999, border: "1px solid #ddd6c7", background: "#fffdf8", color: "#2b2620", fontSize: 14, cursor: "pointer", fontFamily: "inherit" } }, "\u7AE0\u4E00\u89A7\u306B\u623B\u308B"))),
+            selectedChapter !== null && !analyzing && segments && (React.createElement("div", null,
+                !speechSupported && (React.createElement("div", { style: { padding: "12px 16px", marginBottom: 16, borderRadius: 10, background: "#f0e6d8", border: "1px solid #ddd6c7", color: "#8a6a3f", fontSize: 13, lineHeight: 1.7 } }, "\u3053\u306E\u74B0\u5883\u3067\u306F\u97F3\u58F0\u8AAD\u307F\u4E0A\u3052\u6A5F\u80FD\u304C\u4F7F\u3048\u306A\u3044\u307F\u305F\u3044\u3002\u8A71\u8005\u3054\u3068\u306E\u5206\u5272\u7D50\u679C\u306F\u30C6\u30AD\u30B9\u30C8\u3068\u3057\u3066\u78BA\u8A8D\u3067\u304D\u308B\u3088\u3002")),
+                React.createElement("div", { style: { display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14, padding: 14, background: "#fffdf8", border: "1px solid #ddd6c7", borderRadius: 10 } }, uniqueSpeakerNames.map((name) => {
+                    const preset = presetFor(name);
+                    return (React.createElement("button", { key: name, onClick: () => cycleSpeaker(name), title: "\u30AF\u30EA\u30C3\u30AF\u3067\u58F0\u3092\u5909\u66F4", style: { display: "flex", alignItems: "center", gap: 6, padding: "5px 12px", borderRadius: 999, border: "1px solid " + preset.color + "55", background: preset.color + "18", color: preset.color, fontSize: 12.5, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" } },
+                        React.createElement("span", { style: { width: 8, height: 8, borderRadius: "50%", background: preset.color, display: "inline-block" } }),
+                        name));
+                })),
+                React.createElement("div", { style: { display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap", alignItems: "center" } },
+                    React.createElement("button", { onClick: togglePlay, style: { padding: "9px 16px", borderRadius: 999, border: "none", background: "#c1533f", color: "#fffdf8", fontSize: 14, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" } }, playState === "playing" ? "⏸ 一時停止" : playState === "paused" ? "▶ 再開" : "▶ 再生"),
+                    React.createElement("button", { onClick: stopPlayback, style: { padding: "9px 14px", borderRadius: 999, border: "1px solid #ddd6c7", background: "#fffdf8", color: "#2b2620", fontSize: 14, cursor: "pointer", fontFamily: "inherit" } }, "\u23F9 \u505C\u6B62"),
+                    React.createElement("button", { onClick: () => { stopPlayback(); setSelectedChapter(null); setSegments(null); }, style: { padding: "9px 14px", borderRadius: 999, border: "1px solid #ddd6c7", background: "#fffdf8", color: "#8a8577", fontSize: 14, cursor: "pointer", fontFamily: "inherit" } }, "\u21BA \u7AE0\u4E00\u89A7"),
+                    chapters && selectedChapter < chapters.length - 1 && (React.createElement("button", { onClick: () => analyzeChapter(selectedChapter + 1), style: { padding: "9px 14px", borderRadius: 999, border: "1px solid #ddd6c7", background: "#fffdf8", color: "#2b2620", fontSize: 14, cursor: "pointer", fontFamily: "inherit", marginLeft: "auto" } }, "\u6B21\u306E\u7AE0\u3078 \u25B6"))),
+                React.createElement("div", { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14, padding: "10px 14px", background: "#fffdf8", border: "1px solid #ddd6c7", borderRadius: 10 } },
+                    React.createElement("span", { style: { fontSize: 12.5, color: "#8a8577", whiteSpace: "nowrap" } }, "\u901F\u5EA6"),
+                    React.createElement("input", { type: "range", min: "0.5", max: "2.0", step: "0.1", value: speedMultiplier, onChange: (e) => setSpeedMultiplier(parseFloat(e.target.value)), style: { flex: 1 } }),
+                    React.createElement("span", { style: { fontSize: 13, color: "#2b2620", minWidth: 34, textAlign: "right" } },
+                        speedMultiplier.toFixed(1),
+                        "x")),
+                React.createElement("div", { style: { background: "#fffdf8", border: "1px solid #ddd6c7", borderRadius: 10, padding: 20, fontSize: 16, lineHeight: 2.1 } }, segments.map((seg, i) => {
+                    const preset = presetFor(seg.speaker);
+                    const isDialogue = seg.speaker !== "地の文";
+                    const active = i === currentIdx;
+                    const conflicts = seg.rubyConflicts || [];
+                    return (React.createElement(React.Fragment, { key: i },
+                        React.createElement("span", { onClick: () => playFrom(i), style: { cursor: "pointer", color: isDialogue ? preset.color : "#2b2620", fontWeight: isDialogue ? 600 : 400, background: active ? preset.color + "22" : "transparent", borderRadius: 4, padding: active ? "1px 2px" : "0" } }, seg.text),
+                        conflicts.map((c, ci) => (React.createElement("span", { key: "conflict-" + i + "-" + ci, onClick: (e) => {
+                                e.stopPropagation();
+                                const next = { ...customReadings, [c.term]: c.rubyReading };
+                                setCustomReadings(next);
+                                persistCustomReadings(next);
+                            }, title: `「${c.term}」の読みがルビと食い違っています。AIの判断: ${c.aiReading} / ルビ: ${c.rubyReading}\nクリックするとルビの読みを辞書に固定します。`, style: {
+                                display: "inline-block", marginLeft: 2, padding: "0 5px", fontSize: 11,
+                                borderRadius: 999, background: "#f0e6d8", color: "#8a6a3f", cursor: "pointer",
+                                verticalAlign: "middle", border: "1px solid #ddd0b8",
+                            } },
+                            "\u26A0",
+                            c.term)))));
+                })),
+                segments.some((s) => (s.rubyConflicts || []).length > 0) && (React.createElement("p", { style: { fontSize: 12, color: "#8a6a3f", marginTop: 10 } }, "\u26A0\u30DE\u30FC\u30AF\u306F\u3001AI\u304C\u30EB\u30D3\u3068\u7570\u306A\u308B\u8AAD\u307F\u65B9\u3092\u9078\u3093\u3060\u7B87\u6240\u3067\u3059\u3002\u30BF\u30C3\u30D7\u3059\u308B\u3068\u3001\u30EB\u30D3\u5074\u306E\u8AAD\u307F\u3092\u8F9E\u66F8\u306B\u56FA\u5B9A\u3067\u304D\u307E\u3059\u3002")))))));
+}
+function App() {
+    return (React.createElement(ErrorBoundary, null,
+        React.createElement(AppInner, null)));
+}
+ReactDOM.createRoot(document.getElementById("root")).render(React.createElement(App, null));
+
+</script>
+</body>
+</html>
