@@ -237,6 +237,22 @@ function parseAnnotationChunks(text) {
         chunks.push({ type: "literal", text: text.slice(lastIndex) });
     return chunks;
 }
+// --- 単語の末尾がひらがなで終わっているのに、その読みの末尾に同じひらがなが
+//     含まれていない場合、AIがそのひらがな分の読みをつけ忘れている可能性が高い。
+//     その場合、末尾のひらがなだけを切り離して「印なしの地の文」として扱う
+//     （ひらがな自体は元々読み方に困らないので、これで安全に補正できる）
+function fixTrailingHiraganaOmission(term, reading) {
+    const m = term.match(/([\u3041-\u3096ー]+)$/);
+    if (m) {
+        const suffix = m[1];
+        if (!reading.endsWith(suffix)) {
+            const kanjiPart = term.slice(0, term.length - suffix.length);
+            if (kanjiPart)
+                return { term: kanjiPart, reading, trailingLiteral: suffix };
+        }
+    }
+    return { term, reading, trailingLiteral: "" };
+}
 function validateAnnotatedText(original, annotated, rubyHints) {
     const chunks = parseAnnotationChunks(annotated);
     const LOOKAHEAD = 20; // 単語のズレを再同期するために先読みする文字数
@@ -263,7 +279,8 @@ function validateAnnotatedText(original, annotated, rubyHints) {
             if (foundAt > origPos)
                 repaired += original.slice(origPos, foundAt);
             if (chunk.type === "anno") {
-                repaired += "《" + plain + "｜" + chunk.reading + "》";
+                const fixed = fixTrailingHiraganaOmission(plain, chunk.reading || "");
+                repaired += "《" + fixed.term + "｜" + fixed.reading + "》" + fixed.trailingLiteral;
                 const rubyReading = rubyHints[plain];
                 if (rubyReading && rubyReading !== chunk.reading) {
                     conflicts.push({ term: plain, rubyReading, aiReading: chunk.reading || "" });
