@@ -725,9 +725,34 @@ function AppInner() {
             return;
         // 既に解析済みの章なら、APIを呼ばずキャッシュから復元する
         if (chapterSegmentsCache[chapterIdx]) {
+            const cachedSegments = chapterSegmentsCache[chapterIdx];
             setSelectedChapter(chapterIdx);
-            setSegments(chapterSegmentsCache[chapterIdx]);
+            setSegments(cachedSegments);
             stopPlayback();
+            // 話者ごとの色（声の割り当て）が、何らかの理由で復元されていない場合に備えて、
+            // ここでも不足分を補っておく（これが抜けていると、全員デフォルトのグレー色になってしまう）
+            const uniqueSpeakers = [];
+            cachedSegments.forEach((s) => {
+                if (s.speaker !== "地の文" && !uniqueSpeakers.includes(s.speaker))
+                    uniqueSpeakers.push(s.speaker);
+            });
+            setSpeakerMap((prev) => {
+                let changed = false;
+                const next = { ...prev };
+                if (!next["地の文"]) {
+                    next["地の文"] = "narrator";
+                    changed = true;
+                }
+                uniqueSpeakers.forEach((sp, i) => {
+                    if (!next[sp]) {
+                        next[sp] = VOICE_PRESETS[(i % (VOICE_PRESETS.length - 1)) + 1].key;
+                        changed = true;
+                    }
+                });
+                if (changed && currentBookId)
+                    persistSession({ speakerMap: next });
+                return changed ? next : prev;
+            });
             return;
         }
         if (!apiKey.trim()) {
