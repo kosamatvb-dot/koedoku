@@ -244,12 +244,12 @@ function validateAnnotatedText(original, annotated, rubyHints) {
     const valid = plainCheck === original;
     if (!valid) {
         // デバッグ用：なぜ無効判定されたか、実際にAIが返した内容をコンソールに出力しておく
-        // （ブラウザの開発者ツール・コンソールで確認できる）
-        console.warn("annotatedTextの検証に失敗しました。この章のこのセグメントは印なしの原文にフォールバックします。", {
-            original,
-            annotated,
-            plainCheck,
-        });
+        // （ブラウザの開発者ツール・コンソールで確認できる。オブジェクトではなく文字列として
+        //   出力することで、クリックして展開しなくてもそのままコピーできるようにする）
+        console.warn("annotatedTextの検証に失敗しました。\n" +
+            "【原文】" + original + "\n" +
+            "【AIの回答】" + annotated + "\n" +
+            "【印を除去した結果】" + plainCheck);
     }
     return { valid, conflicts: valid ? conflicts : [] };
 }
@@ -1043,24 +1043,11 @@ function AppInner() {
                                 return;
                             const url = URL.createObjectURL(blob);
                             const audio = new Audio(url);
-                            // 直前の音声（1つ前のピース、またはセグメント切り替え直前の音声）が万が一まだ
-                            // 再生中のまま残っていた場合に備えて、新しい音声を再生する前に確実に止めておく。
-                            // これがセリフの切り替わりのタイミングで音が二重に重なる事故の対策になる。
-                            if (currentAudioRef.current && currentAudioRef.current !== audio) {
-                                try {
-                                    currentAudioRef.current.pause();
-                                    currentAudioRef.current.currentTime = 0;
-                                }
-                                catch (e) { }
-                            }
-                            currentAudioRef.current = audio;
-                            // 取りこぼし防止のため、生成した全てのAudio要素をここに記録しておく
-                            allAudiosRef.current.push(audio);
-                            const cleanupAudio = () => {
-                                URL.revokeObjectURL(url);
-                                if (currentAudioRef.current === audio)
+                            const cleanupAudio = (targetUrl, targetAudio) => {
+                                URL.revokeObjectURL(targetUrl);
+                                if (currentAudioRef.current === targetAudio)
                                     currentAudioRef.current = null;
-                                allAudiosRef.current = allAudiosRef.current.filter((a) => a !== audio);
+                                allAudiosRef.current = allAudiosRef.current.filter((a) => a !== targetAudio);
                             };
                             // 「次のピースへ進む」処理は、再生終了イベント・エラーイベント・再試行失敗の
                             // どの経路から呼ばれても、必ず1回しか実行されないようにする。
@@ -1080,40 +1067,55 @@ function AppInner() {
                                     speakPieceAzure(pieceIdx + 1);
                                 }
                             };
-                            audio.onended = () => {
-                                cleanupAudio();
-                                const isLast = pieceIdx >= piecesToSpeak.length - 1;
-                                advanceOnce(isLast ? 0 : 130 / speedMultiplier);
-                            };
-                            audio.onerror = () => {
-                                cleanupAudio();
-                                advanceOnce(0);
-                            };
-                            // 発話の直前にごく短い間を置く（連続してAudioを再生すると、前の音声の停止処理と
-                            // 新しい音声の開始が重なって、一瞬二重に聞こえることがあるため）
-                            await new Promise((r) => setTimeout(r, 40));
-                            if (playGenerationRef.current !== myGeneration || stopFlagRef.current) {
-                                cleanupAudio();
-                                return;
-                            }
-                            try {
-                                await audio.play();
-                            }
-                            catch (playErr) {
-                                // iOSの自動再生制限などで失敗した場合、少し待ってからもう一度だけ試す
-                                await new Promise((r) => setTimeout(r, 150));
+                            // 1回分の再生を試みる（毎回まっさらなAudio要素とURLを使う）。
+                            // 同じ要素を使い回して再試行すると、待機中にブラウザが独自にエラーイベントを
+                            // 発生させて音声データを解放してしまい、再試行時に「対応するソースがない」
+                            // エラーになることがあったため、常に新しい要素で試すようにしている。
+                            const attemptPlay = async (theAudio, theUrl) => {
+                                if (currentAudioRef.current && currentAudioRef.current !== theAudio) {
+                                    try {
+                                        currentAudioRef.current.pause();
+                                        currentAudioRef.current.currentTime = 0;
+                                    }
+                                    catch (e) { }
+                                }
+                                currentAudioRef.current = theAudio;
+                                allAudiosRef.current.push(theAudio);
+                                theAudio.onended = () => {
+                                    cleanupAudio(theUrl, theAudio);
+                                    const isLast = pieceIdx >= piecesToSpeak.length - 1;
+                                    advanceOnce(isLast ? 0 : 130 / speedMultiplier);
+                                };
+                                theAudio.onerror = () => {
+                                    cleanupAudio(theUrl, theAudio);
+                                };
+                                await new Promise((r) => setTimeout(r, 40));
                                 if (playGenerationRef.current !== myGeneration || stopFlagRef.current) {
-                                    cleanupAudio();
-                                    return;
+                                    cleanupAudio(theUrl, theAudio);
+                                    return false;
                                 }
                                 try {
-                                    await audio.play();
+                                    await theAudio.play();
+                                    return true;
                                 }
-                                catch (retryErr) {
-                                    console.error("Azure再生リトライ失敗:", retryErr);
-                                    cleanupAudio();
-                                    // 1箇所の再生に失敗しても、全体を止めずに次に進む（advanceOnce経由なので、
-                                    // 万が一裏で音声が実際に再生されてonendedが後から発火しても、二重実行はされない）
+                                catch (e) {
+                                    cleanupAudio(theUrl, theAudio);
+                                    return false;
+                                }
+                            };
+                            const firstOk = await attemptPlay(audio, url);
+                            if (!firstOk) {
+                                // iOSの自動再生制限などで失敗した場合、少し待ってからもう一度だけ、
+                                // 新しいAudio要素・新しいURLで試す
+                                await new Promise((r) => setTimeout(r, 150));
+                                if (playGenerationRef.current !== myGeneration || stopFlagRef.current)
+                                    return;
+                                const retryUrl = URL.createObjectURL(blob);
+                                const retryAudio = new Audio(retryUrl);
+                                const retryOk = await attemptPlay(retryAudio, retryUrl);
+                                if (!retryOk) {
+                                    console.error("Azure再生リトライ失敗");
+                                    // 1箇所の再生に失敗しても、全体を止めずに次に進む
                                     advanceOnce(0);
                                 }
                             }
