@@ -215,19 +215,21 @@ function chunkText(text, maxChars) {
     return chunks;
 }
 // --- annotatedText（《単語|読み》の形式で、読みが必要な箇所にだけ印がついたテキスト）を解析時に検証する ---
-// 印を全部取り除いた結果が元のtextと完全に一致するかを検証することで、
-// AIが元の文章を勝手に書き換えていないか（ハルシネーション）を厳密にチェックできる。
-// この段階ではrubyHintsとの食い違いだけ検出し、最終的な読み上げテキストの組み立ては
-// 再生のたびに（手動辞書を反映するため）別途行う。
-function validateAnnotatedText(original, annotated, rubyHints) {
-    // AIは全角の縦棒「｜」を使う指示になっているが、念のため半角「|」にも対応しておく
+// --- 文章を「文」の単位に分割する。句点・感嘆符・疑問符・改行を区切りとする ---
+// annotatedTextとoriginalの両方に同じ規則で使うことで、文単位で個別に検証できるようにする
+function splitIntoSentences(text) {
+    const parts = text.split(/(?<=[。！？\n])/);
+    return parts.filter((p) => p.length > 0);
+}
+// 印を全部取り除いた結果が元の文と完全に一致するかを検証する（1文単位）
+function validateSentenceAnnotation(originalSentence, annotatedSentence, rubyHints) {
     const annotationRe = /《([^|｜》]+)[|｜]([^》]+)》/g;
     let plainCheck = "";
     const conflicts = [];
     let lastIndex = 0;
     let m;
-    while ((m = annotationRe.exec(annotated)) !== null) {
-        const before = annotated.slice(lastIndex, m.index);
+    while ((m = annotationRe.exec(annotatedSentence)) !== null) {
+        const before = annotatedSentence.slice(lastIndex, m.index);
         plainCheck += before;
         const term = m[1];
         const reading = m[2];
@@ -238,20 +240,44 @@ function validateAnnotatedText(original, annotated, rubyHints) {
         }
         lastIndex = annotationRe.lastIndex;
     }
-    plainCheck += annotated.slice(lastIndex);
-    // 印を取り除いた結果が元の文章と完全に一致しなければ、AIが文章を書き換えてしまった
-    // 可能性が高いので、この結果は信用しない
-    const valid = plainCheck === original;
-    if (!valid) {
-        // デバッグ用：なぜ無効判定されたか、実際にAIが返した内容をコンソールに出力しておく
-        // （ブラウザの開発者ツール・コンソールで確認できる。オブジェクトではなく文字列として
-        //   出力することで、クリックして展開しなくてもそのままコピーできるようにする）
-        console.warn("annotatedTextの検証に失敗しました。\n" +
+    plainCheck += annotatedSentence.slice(lastIndex);
+    return { valid: plainCheck === originalSentence, conflicts };
+}
+// --- annotatedTextを検証する（文単位）。1文でもAIが書き換えてしまっていたら、
+//     その文だけ原文にフォールバックし、他の正しく処理できた文は活かす。
+//     （長い地の文の中で、ごく一部の文だけAIが微妙な言い換えをしてしまうことがあり、
+//       文章全体を丸ごと無効にすると、正しく処理できていた大部分まで巻き込んで
+//       捨ててしまうことになるため、被害を1文単位に抑える）
+function validateAnnotatedText(original, annotated, rubyHints) {
+    const origSentences = splitIntoSentences(original);
+    const annoSentences = splitIntoSentences(annotated);
+    if (origSentences.length !== annoSentences.length) {
+        // 文の数自体が食い違っている場合は、文単位の対応付けができないため、
+        // 安全のため全体を無効とする（このケースは稀なはず）
+        console.warn("annotatedTextの検証に失敗しました（文の数が一致しません）。\n" +
             "【原文】" + original + "\n" +
-            "【AIの回答】" + annotated + "\n" +
-            "【印を除去した結果】" + plainCheck);
+            "【AIの回答】" + annotated);
+        return { valid: false, annotatedText: original, conflicts: [] };
     }
-    return { valid, conflicts: valid ? conflicts : [] };
+    let rebuilt = "";
+    const allConflicts = [];
+    let anyValid = false;
+    for (let i = 0; i < origSentences.length; i++) {
+        const result = validateSentenceAnnotation(origSentences[i], annoSentences[i], rubyHints);
+        if (result.valid) {
+            rebuilt += annoSentences[i];
+            allConflicts.push(...result.conflicts);
+            anyValid = true;
+        }
+        else {
+            // この文だけ原文にフォールバックする（他の文の印は活かす）
+            rebuilt += origSentences[i];
+            console.warn("annotatedTextの検証に失敗しました（1文のみフォールバック）。\n" +
+                "【原文の該当文】" + origSentences[i] + "\n" +
+                "【AIの回答の該当文】" + annoSentences[i]);
+        }
+    }
+    return { valid: anyValid, annotatedText: rebuilt, conflicts: allConflicts };
 }
 // --- 再生のたびに、annotatedTextから読み上げ用テキストを組み立て直す ---
 // 手動辞書（customReadings）は、AIが決めた読みより常に優先される。これにより、
@@ -369,16 +395,16 @@ ${text}`;
     const segments = (parsed.segments || []).map((s) => {
         const original = s.text || "";
         const annotated = s.annotatedText || original;
-        // annotatedTextを検証する。印を取り除いた結果が元の文章と一致しない場合
-        // （AIが文章を書き換えてしまった場合）は、安全のため原文だけを使うことにする。
+        // annotatedTextを文単位で検証する。AIが書き換えてしまった文だけ原文にフォールバックし、
+        // 正しく処理できた他の文の印はそのまま活かす（1文のブレで全体を捨てないようにするため）。
         // 実際の読み上げテキストの組み立ては、手動辞書を反映するため再生のたびに行う。
-        const { valid, conflicts } = validateAnnotatedText(original, annotated, rubyHints);
+        const result = validateAnnotatedText(original, annotated, rubyHints);
         return {
             text: original,
             speaker: s.speaker,
             gender: s.gender,
-            annotatedText: valid ? annotated : undefined,
-            conflicts,
+            annotatedText: result.annotatedText,
+            conflicts: result.conflicts,
         };
     });
     const newNames = [...knownNames];
