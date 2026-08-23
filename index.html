@@ -321,6 +321,22 @@ function validateAnnotatedText(original, annotated, rubyHints) {
 // --- 再生のたびに、annotatedTextから読み上げ用テキストを組み立て直す ---
 // 手動辞書（customReadings）は、AIが決めた読みより常に優先される。これにより、
 // 後から辞書に追加した修正が、キャッシュ済みの解析結果に対しても即座に反映される。
+// --- 読みの末尾と、その直後に続く地の文（印なし部分）の先頭が、同じひらがなで
+//     重複していないか確認する。これは、AIが漢字部分だけに印をつけたつもりが、
+//     読みの方に送り仮名の分まで含めて書いてしまった場合に起きる（例：「進」に対して
+//     「すすめ」という読みをつけてしまい、直後の「める」とつながって「すすめめる」に
+//     なってしまう）。重複が見つかった場合、直後の地の文側から重複分を取り除く。
+function trimOverlappingOkurigana(reading, following) {
+    const maxLen = Math.min(reading.length, following.length, 4); // 誤爆を避けるため短い範囲だけ確認
+    for (let len = maxLen; len > 0; len--) {
+        const tail = reading.slice(reading.length - len);
+        const head = following.slice(0, len);
+        if (tail === head && /^[\u3041-\u3096ー]+$/.test(head)) {
+            return following.slice(len);
+        }
+    }
+    return following;
+}
 function resolveSpokenText(original, annotatedText, customReadings) {
     const source = annotatedText || original;
     // AIは全角の縦棒「｜」を使う指示になっているが、念のため半角「|」にも対応しておく
@@ -333,8 +349,19 @@ function resolveSpokenText(original, annotatedText, customReadings) {
         const term = m[1];
         const aiReading = m[2];
         // 手動辞書に同じ単語の登録があれば、AIの判断より優先してそちらを使う
-        result += customReadings[term] || aiReading;
+        const reading = customReadings[term] || aiReading;
+        result += reading;
         lastIndex = annotationRe.lastIndex;
+        // 次の印なし部分（地の文）が、この読みの末尾と重複していないか確認して補正する
+        const nextAnnoMatch = annotationRe.exec(source);
+        const nextBoundary = nextAnnoMatch ? nextAnnoMatch.index : source.length;
+        annotationRe.lastIndex = lastIndex; // execで動かしたポインタを元に戻す
+        const followingPlain = source.slice(lastIndex, nextBoundary);
+        const trimmedFollowing = trimOverlappingOkurigana(reading, followingPlain);
+        if (trimmedFollowing !== followingPlain) {
+            result += trimmedFollowing;
+            lastIndex = nextBoundary;
+        }
     }
     result += source.slice(lastIndex);
     return result;
