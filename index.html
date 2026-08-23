@@ -11,7 +11,6 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
-<script defer src="https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js"></script>
 <style>
   html, body { margin: 0; padding: 0; background: #f6f3ec; -webkit-text-size-adjust: 100%; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -284,16 +283,9 @@ function katakanaToHiragana(str) {
 //     元の文章全体を（送り仮名も含めて）kuromojiに解析させることで、活用形も含めた
 //     正しい文脈で読みを判定させ、そこから漢字部分だけの読みを切り出す。
 //     （固有名詞・当て字など、辞書にない単語はそのままAIの判断が使われる）
-function applyKuromojiCorrection(original, annotatedText, tokenizer, rubyHints) {
-    if (!tokenizer)
+function applyKuromojiCorrection(original, annotatedText, kuromojiTokens, rubyHints) {
+    if (!kuromojiTokens)
         return annotatedText;
-    let kuromojiTokens;
-    try {
-        kuromojiTokens = tokenizer.tokenize(original);
-    }
-    catch (e) {
-        return annotatedText; // 解析に失敗しても、アプリの動作自体には影響させない
-    }
     const chunks = parseAnnotationChunks(annotatedText);
     let result = "";
     let origPos = 0; // originalテキスト側の現在位置（kuromojiのトークン位置と対応づけるため）
@@ -710,31 +702,85 @@ function AppInner() {
     const [readingSearchResults, setReadingSearchResults] = useState(null);
     const [newReading, setNewReading] = useState("");
     const [epubFile, setEpubFile] = useState(null);
-    const kuromojiTokenizerRef = useRef(null);
-    const kuromojiLoadStartedRef = useRef(false);
-    const [kuromojiStatus, setKuromojiStatus] = useState("idle");
-    // 辞書ベースの形態素解析器（kuromoji）を読み込む。起動時には読み込まず、
-    // 実際に章を解析するタイミングで初めて呼び出す（Geminiへの問い合わせと並行して進めることで、
-    // 使わない時にまで毎回ページの読み込みが重くなるのを防ぐ）
-    const ensureKuromojiLoading = () => {
-        if (kuromojiLoadStartedRef.current)
-            return;
-        kuromojiLoadStartedRef.current = true;
-        if (typeof window.kuromoji === "undefined") {
+    const kuromojiWorkerRef = useRef(null);
+    const kuromojiRequestsRef = useRef({});
+    const kuromojiRequestIdRef = useRef(0);
+    const [kuromojiStatus, setKuromojiStatus] = useState("loading");
+    // 辞書ベースの形態素解析器（kuromoji）を、メイン画面とは別スレッド（Web Worker）の中で
+    // 動かす。これにより、辞書の読み込み・組み立てというCPU負荷の高い処理をしても、
+    // メイン画面の反応が悪くなったり固まったりすることが原理的に起きなくなる。
+    useEffect(() => {
+        if (typeof Worker === "undefined") {
             setKuromojiStatus("error");
             return;
         }
-        setKuromojiStatus("loading");
-        window.kuromoji
-            .builder({ dicPath: "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/" })
-            .build((err, tokenizer) => {
-            if (err) {
-                console.error("kuromojiの読み込みに失敗しました:", err);
+        const workerCode = `
+      importScripts("https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js");
+      let tokenizer = null;
+      self.onmessage = function(e) {
+        if (e.data.type === "init") {
+          kuromoji.builder({ dicPath: "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/" }).build(function (err, t) {
+            if (err) { self.postMessage({ type: "error", error: String(err) }); return; }
+            tokenizer = t;
+            self.postMessage({ type: "ready" });
+          });
+        } else if (e.data.type === "tokenize") {
+          if (!tokenizer) { self.postMessage({ type: "result", id: e.data.id, tokens: [] }); return; }
+          try {
+            const tokens = tokenizer.tokenize(e.data.text);
+            self.postMessage({ type: "result", id: e.data.id, tokens: tokens });
+          } catch (err) {
+            self.postMessage({ type: "result", id: e.data.id, tokens: [] });
+          }
+        }
+      };
+    `;
+        try {
+            const blob = new Blob([workerCode], { type: "application/javascript" });
+            const worker = new Worker(URL.createObjectURL(blob));
+            worker.onmessage = (e) => {
+                if (e.data.type === "ready") {
+                    setKuromojiStatus("ready");
+                }
+                else if (e.data.type === "error") {
+                    console.error("kuromoji(Worker)の読み込みに失敗しました:", e.data.error);
+                    setKuromojiStatus("error");
+                }
+                else if (e.data.type === "result") {
+                    const resolve = kuromojiRequestsRef.current[e.data.id];
+                    if (resolve) {
+                        resolve(e.data.tokens);
+                        delete kuromojiRequestsRef.current[e.data.id];
+                    }
+                }
+            };
+            worker.onerror = (e) => {
+                console.error("kuromoji Workerでエラーが発生しました:", e);
                 setKuromojiStatus("error");
+            };
+            worker.postMessage({ type: "init" });
+            kuromojiWorkerRef.current = worker;
+        }
+        catch (e) {
+            console.error("kuromoji Workerの起動に失敗しました:", e);
+            setKuromojiStatus("error");
+        }
+        return () => {
+            var _a;
+            (_a = kuromojiWorkerRef.current) === null || _a === void 0 ? void 0 : _a.terminate();
+        };
+    }, []);
+    // Workerに文章を渡してトークン化してもらう（メインスレッドをブロックしない）
+    const tokenizeWithKuromojiWorker = (text) => {
+        return new Promise((resolve) => {
+            const worker = kuromojiWorkerRef.current;
+            if (!worker) {
+                resolve([]);
                 return;
             }
-            kuromojiTokenizerRef.current = tokenizer;
-            setKuromojiStatus("ready");
+            const id = kuromojiRequestIdRef.current++;
+            kuromojiRequestsRef.current[id] = resolve;
+            worker.postMessage({ type: "tokenize", id, text });
         });
     };
     // --- 本ごとに個別のデータを保存する仕組み。キーは本の識別子（ファイル名など）で、
@@ -1040,10 +1086,6 @@ function AppInner() {
             setAnalyzeError("Gemini APIキーを入力してください");
             return;
         }
-        // Geminiへの問い合わせと並行して、辞書（kuromoji）の読み込みも始めておく
-        // （新規解析が実際に必要になったタイミングで初めて読み込むことで、
-        //   既存の解析結果を聞くだけの時にまで、毎回ページが重くなるのを防ぐ）
-        ensureKuromojiLoading();
         setSelectedChapter(chapterIdx);
         setAnalyzing(true);
         setAnalyzeError("");
@@ -1084,14 +1126,19 @@ function AppInner() {
             setSpeakerVoiceIndex(voiceIdx);
             // 辞書ベースの形態素解析器（kuromoji）が使えれば、AIの読みを辞書の読みと
             // 突き合わせて補正する。これにより「思う→オモリウ」のような、AIが
-            // 単純な単語で読みを壊してしまうケースを、確実な辞書情報で防げるようになる
-            if (kuromojiTokenizerRef.current) {
-                allSegments = allSegments.map((seg) => ({
-                    ...seg,
-                    annotatedText: seg.annotatedText
-                        ? applyKuromojiCorrection(seg.text, seg.annotatedText, kuromojiTokenizerRef.current, chapter.rubyMap || {})
-                        : seg.annotatedText,
+            // 単純な単語で読みを壊してしまうケースを、確実な辞書情報で防げるようになる。
+            // トークン化はWeb Worker（別スレッド）に依頼するため、メイン画面は固まらない
+            if (kuromojiWorkerRef.current && kuromojiStatus === "ready") {
+                const tokenizedSegments = await Promise.all(allSegments.map(async (seg) => {
+                    if (!seg.annotatedText)
+                        return seg;
+                    const tokens = await tokenizeWithKuromojiWorker(seg.text);
+                    return {
+                        ...seg,
+                        annotatedText: applyKuromojiCorrection(seg.text, seg.annotatedText, tokens, chapter.rubyMap || {}),
+                    };
                 }));
+                allSegments = tokenizedSegments;
             }
             const uniqueSpeakers = [];
             allSegments.forEach((s) => {
