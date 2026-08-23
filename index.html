@@ -230,7 +230,14 @@ function parseAnnotationChunks(text) {
     while ((m = annotationRe.exec(text)) !== null) {
         if (m.index > lastIndex)
             chunks.push({ type: "literal", text: text.slice(lastIndex, m.index) });
-        chunks.push({ type: "anno", text: m[1], reading: m[2] });
+        // AIが「この文脈だからこその読み」の印として末尾につけたアスタリスクを検出する
+        let reading = m[2];
+        let contextDependent = false;
+        if (reading.endsWith("*")) {
+            reading = reading.slice(0, -1);
+            contextDependent = true;
+        }
+        chunks.push({ type: "anno", text: m[1], reading, contextDependent });
         lastIndex = annotationRe.lastIndex;
     }
     if (lastIndex < text.length)
@@ -278,77 +285,6 @@ function isPlausibleReading(term, reading) {
 function katakanaToHiragana(str) {
     return str.replace(/[\u30A1-\u30F6]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0x60));
 }
-// --- kuromoji（辞書ベースの形態素解析）を使って、AIの読みが辞書上の読みと
-//     大きく食い違っていないか確認し、食い違っていれば辞書の読みで上書きする。
-//     元の文章全体を（送り仮名も含めて）kuromojiに解析させることで、活用形も含めた
-//     正しい文脈で読みを判定させ、そこから漢字部分だけの読みを切り出す。
-//     （固有名詞・当て字など、辞書にない単語はそのままAIの判断が使われる）
-function applyKuromojiCorrection(original, annotatedText, kuromojiTokens, rubyHints) {
-    if (!kuromojiTokens)
-        return annotatedText;
-    const chunks = parseAnnotationChunks(annotatedText);
-    let result = "";
-    let origPos = 0; // originalテキスト側の現在位置（kuromojiのトークン位置と対応づけるため）
-    let i = 0;
-    while (i < chunks.length) {
-        const chunk = chunks[i];
-        // 作者がこの単語にルビを指定している場合は、作者の意図を最優先し、
-        // 辞書の一般的な読みで上書きしない（標準的でない、あえての読み方の演出などがあるため）
-        if (chunk.type === "anno" && original.startsWith(chunk.text, origPos) && !rubyHints[chunk.text]) {
-            const token = kuromojiTokens.find((t) => t.word_position - 1 === origPos);
-            if (token && token.word_type === "KNOWN" && token.surface_form.startsWith(chunk.text) && !rubyHints[token.surface_form]) {
-                const fullReading = katakanaToHiragana(token.reading || "");
-                const extraLen = token.surface_form.length - chunk.text.length; // 送り仮名の分の文字数
-                if (extraLen === 0) {
-                    // 送り仮名のない単語（辞書の読みでそのまま上書きする）
-                    if (fullReading && fullReading !== chunk.reading && isPlausibleReading(chunk.text, fullReading)) {
-                        result += "《" + chunk.text + "｜" + fullReading + "》";
-                        origPos += chunk.text.length;
-                        i++;
-                        continue;
-                    }
-                }
-                else if (original.startsWith(token.surface_form, origPos) && isPlausibleReading(token.surface_form, fullReading)) {
-                    // 辞書で裏付けが取れる単語は、検索や表示のしやすさのため、送り仮名も含めた
-                    // 単語全体（例：「進む」）に、辞書の正しい読み（例：「すすむ」）をまとめて印をつける。
-                    // （kuromojiの辞書照合済みなので、AI生成時のような読みの重複リスクはない）
-                    let remaining = extraLen;
-                    let j = i + 1;
-                    const tempChunks = [...chunks];
-                    while (remaining > 0 && j < tempChunks.length && tempChunks[j].type === "literal") {
-                        const lit = tempChunks[j].text;
-                        if (lit.length <= remaining) {
-                            remaining -= lit.length;
-                            j++;
-                        }
-                        else {
-                            tempChunks[j] = { type: "literal", text: lit.slice(remaining) };
-                            remaining = 0;
-                        }
-                    }
-                    if (remaining === 0) {
-                        // 送り仮名の分をちょうど吸収できたので、単語全体で印をつける
-                        result += "《" + token.surface_form + "｜" + fullReading + "》";
-                        origPos += token.surface_form.length;
-                        for (let k = i + 1; k < j; k++)
-                            chunks[k] = tempChunks[k];
-                        i = j;
-                        continue;
-                    }
-                }
-            }
-            result += "《" + chunk.text + "｜" + chunk.reading + "》";
-            origPos += chunk.text.length;
-            i++;
-        }
-        else {
-            result += chunk.text;
-            origPos += chunk.text.length;
-            i++;
-        }
-    }
-    return result;
-}
 function validateAnnotatedText(original, annotated, rubyHints) {
     const chunks = parseAnnotationChunks(annotated);
     const LOOKAHEAD = 20; // 単語のズレを再同期するために先読みする文字数
@@ -376,7 +312,8 @@ function validateAnnotatedText(original, annotated, rubyHints) {
                 repaired += original.slice(origPos, foundAt);
             if (chunk.type === "anno" && isPlausibleReading(plain, chunk.reading || "")) {
                 const fixed = fixTrailingHiraganaOmission(plain, chunk.reading || "");
-                repaired += "《" + fixed.term + "｜" + fixed.reading + "》" + fixed.trailingLiteral;
+                const marker = chunk.contextDependent ? "*" : "";
+                repaired += "《" + fixed.term + "｜" + fixed.reading + marker + "》" + fixed.trailingLiteral;
                 const rubyReading = rubyHints[plain];
                 if (rubyReading && rubyReading !== chunk.reading) {
                     conflicts.push({ term: plain, rubyReading, aiReading: chunk.reading || "" });
@@ -433,7 +370,8 @@ function resolveSpokenText(original, annotatedText, customReadings) {
     while ((m = annotationRe.exec(source)) !== null) {
         result += source.slice(lastIndex, m.index);
         const term = m[1];
-        const aiReading = m[2];
+        // 「この文脈だからこその読み」の印（末尾のアスタリスク）は読み上げには不要なので取り除く
+        const aiReading = m[2].endsWith("*") ? m[2].slice(0, -1) : m[2];
         // 手動辞書に同じ単語の登録があれば、AIの判断より優先してそちらを使う
         const reading = customReadings[term] || aiReading;
         result += reading;
@@ -453,7 +391,7 @@ function resolveSpokenText(original, annotatedText, customReadings) {
     return result;
 }
 // --- Gemini APIでセリフの話者を推定する ---
-async function analyzeWithGemini(text, apiKey, knownNames, rubyHints) {
+async function analyzeWithGemini(text, apiKey, knownNames, rubyHints, kuromojiHints) {
     var _a, _b, _c, _d, _e, _f, _g;
     const namesHint = knownNames.length > 0
         ? `これまでに登場した人物: ${knownNames.join("、")}。同一人物なら同じ表記で統一してください。`
@@ -461,6 +399,10 @@ async function analyzeWithGemini(text, apiKey, knownNames, rubyHints) {
     const rubyHintKeys = Object.keys(rubyHints).filter((k) => text.includes(k));
     const rubyHintText = rubyHintKeys.length > 0
         ? `\n作者がこの章のどこかで指定したルビ（参考情報。この文章中に同じ表記が出てくる場合、まずこの読みが文脈に合っているか確認し、合っていれば《単語｜読み》の形でそのまま反映する。もし文脈上あきらかに違う読み方をすべき箇所であれば、ルビではなくあなたが判断した読みを反映すること）:\n${rubyHintKeys.map((k) => `${k}＝${rubyHints[k]}`).join("、")}\n`
+        : "";
+    const kuromojiHintKeys = Object.keys(kuromojiHints);
+    const kuromojiHintText = kuromojiHintKeys.length > 0
+        ? `\n辞書（機械的な形態素解析）による参考読み（文脈を考慮しない、代表的な読みでしかない点に注意。この文章中に同じ表記が出てくる場合、基本的にはこの読みをそのまま使ってよいが、文脈上あきらかに違う読み方をすべき箇所（同じ表記でも意味によって読みが変わる単語など）であれば、この読みではなくあなたが判断した読みを反映し、末尾にアスタリスクを付けて示すこと）:\n${kuromojiHintKeys.map((k) => `${k}＝${kuromojiHints[k]}`).join("、")}\n`
         : "";
     const prompt = `以下は日本語の小説の一節です。この文章を「地の文」と「セリフ」に分割し、それぞれのセリフについて話者を推定してください。
 
@@ -488,7 +430,11 @@ async function analyzeWithGemini(text, apiKey, knownNames, rubyHints) {
   促音便・連濁などの音変化が起きるものも同様に対象とする：
   例：「一ヵ月」→《一ヵ月｜いっかげつ》、「三人」→《三人｜さんにん》、「六本」→《六本｜ろっぽん》、「三〇パーセント」→《三〇パーセント｜さんじゅっぱーせんと》、「一〇〇メートル」→《一〇〇メートル｜ひゃくめーとる》。
   **極めて重要**: 印をつけた部分以外は、文字を一切変更しないこと
-${rubyHintText}${namesHint}
+  **文脈依存の読みについて**: 同じ表記でも文脈によって正しい読みが変わりうる単語（例：「堪える」＝こらえる／こたえる、「上手」＝じょうず／うわて、「今日」＝きょう／こんにち等）について、
+  辞書的な代表的読みとは異なる、この文脈だからこその読みを選んだ場合は、読みの直後に半角アスタリスク（*）を1つ付け加えて示すこと。
+  例：《堪｜こら*》える　（この文脈では「こらえる」が正しいが、辞書的には「こたえる」が代表的な読みである場合）
+  通常の、辞書的な読みと一致する場合はアスタリスクをつけないこと。判断に迷う場合はつけなくてよい。
+${kuromojiHintText}${rubyHintText}${namesHint}
 
 文章:
 ${text}`;
@@ -1100,7 +1046,24 @@ function AppInner() {
             let voiceIdx = { ...speakerVoiceIndex };
             for (let i = 0; i < chunks.length; i++) {
                 setAnalyzeProgress(chunks.length > 1 ? `解析中… (${i + 1}/${chunks.length})` : "解析中…");
-                const result = await analyzeWithGemini(chunks[i], apiKey, names, chapter.rubyMap || {});
+                // Geminiに聞く前に、辞書（kuromoji）で機械的な読みを調べておき、参考情報として渡す。
+                // これにより、Gemini自身が「辞書の読みをそのまま使うか、文脈から別の読みにするか」を
+                // 一度の判断でまとめて決められるようになる（後から辞書で上書きする方式より確実）
+                let kuromojiHints = {};
+                if (kuromojiWorkerRef.current && kuromojiStatus === "ready") {
+                    try {
+                        const tokens = await tokenizeWithKuromojiWorker(chunks[i]);
+                        tokens.forEach((t) => {
+                            if (t.word_type === "KNOWN" && /[一-龯]/.test(t.surface_form) && !kuromojiHints[t.surface_form]) {
+                                kuromojiHints[t.surface_form] = katakanaToHiragana(t.reading || "");
+                            }
+                        });
+                    }
+                    catch (e) {
+                        // 辞書の参照に失敗しても、AIだけの判断で解析を続ける
+                    }
+                }
+                const result = await analyzeWithGemini(chunks[i], apiKey, names, chapter.rubyMap || {}, kuromojiHints);
                 allSegments = allSegments.concat(result.segments);
                 names = result.newNames;
                 genders = { ...genders, ...result.genderMap };
@@ -1124,22 +1087,6 @@ function AppInner() {
             setKnownNames(names);
             setSpeakerGender(genders);
             setSpeakerVoiceIndex(voiceIdx);
-            // 辞書ベースの形態素解析器（kuromoji）が使えれば、AIの読みを辞書の読みと
-            // 突き合わせて補正する。これにより「思う→オモリウ」のような、AIが
-            // 単純な単語で読みを壊してしまうケースを、確実な辞書情報で防げるようになる。
-            // トークン化はWeb Worker（別スレッド）に依頼するため、メイン画面は固まらない
-            if (kuromojiWorkerRef.current && kuromojiStatus === "ready") {
-                const tokenizedSegments = await Promise.all(allSegments.map(async (seg) => {
-                    if (!seg.annotatedText)
-                        return seg;
-                    const tokens = await tokenizeWithKuromojiWorker(seg.text);
-                    return {
-                        ...seg,
-                        annotatedText: applyKuromojiCorrection(seg.text, seg.annotatedText, tokens, chapter.rubyMap || {}),
-                    };
-                }));
-                allSegments = tokenizedSegments;
-            }
             const uniqueSpeakers = [];
             allSegments.forEach((s) => {
                 if (s.speaker !== "地の文" && !uniqueSpeakers.includes(s.speaker))
