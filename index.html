@@ -285,7 +285,7 @@ function isPlausibleReading(term, reading) {
 function katakanaToHiragana(str) {
     return str.replace(/[\u30A1-\u30F6]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0x60));
 }
-function validateAnnotatedText(original, annotated, rubyHints) {
+function validateAnnotatedText(original, annotated, rubyHints, kuromojiHints) {
     const chunks = parseAnnotationChunks(annotated);
     const LOOKAHEAD = 20; // 単語のズレを再同期するために先読みする文字数
     let origPos = 0;
@@ -314,9 +314,14 @@ function validateAnnotatedText(original, annotated, rubyHints) {
                 const fixed = fixTrailingHiraganaOmission(plain, chunk.reading || "");
                 const marker = chunk.contextDependent ? "*" : "";
                 repaired += "《" + fixed.term + "｜" + fixed.reading + marker + "》" + fixed.trailingLiteral;
+                // 作者のルビと違う場合、または（ルビがない場合に）辞書の読みと違う文脈判断をした場合に
+                // 「⚠」マークとして表示するため、同じconflicts配列に登録する
                 const rubyReading = rubyHints[plain];
                 if (rubyReading && rubyReading !== chunk.reading) {
                     conflicts.push({ term: plain, rubyReading, aiReading: chunk.reading || "" });
+                }
+                else if (chunk.contextDependent && kuromojiHints[plain] && kuromojiHints[plain] !== chunk.reading) {
+                    conflicts.push({ term: plain, rubyReading: kuromojiHints[plain], aiReading: chunk.reading || "" });
                 }
             }
             else {
@@ -500,7 +505,7 @@ ${text}`;
         // annotatedTextを文単位で検証する。AIが書き換えてしまった文だけ原文にフォールバックし、
         // 正しく処理できた他の文の印はそのまま活かす（1文のブレで全体を捨てないようにするため）。
         // 実際の読み上げテキストの組み立ては、手動辞書を反映するため再生のたびに行う。
-        const result = validateAnnotatedText(original, annotated, rubyHints);
+        const result = validateAnnotatedText(original, annotated, rubyHints, kuromojiHints);
         return {
             text: original,
             speaker: s.speaker,
