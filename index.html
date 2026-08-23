@@ -284,7 +284,7 @@ function katakanaToHiragana(str) {
 //     元の文章全体を（送り仮名も含めて）kuromojiに解析させることで、活用形も含めた
 //     正しい文脈で読みを判定させ、そこから漢字部分だけの読みを切り出す。
 //     （固有名詞・当て字など、辞書にない単語はそのままAIの判断が使われる）
-function applyKuromojiCorrection(original, annotatedText, tokenizer) {
+function applyKuromojiCorrection(original, annotatedText, tokenizer, rubyHints) {
     if (!tokenizer)
         return annotatedText;
     let kuromojiTokens;
@@ -300,9 +300,11 @@ function applyKuromojiCorrection(original, annotatedText, tokenizer) {
     let i = 0;
     while (i < chunks.length) {
         const chunk = chunks[i];
-        if (chunk.type === "anno" && original.startsWith(chunk.text, origPos)) {
+        // 作者がこの単語にルビを指定している場合は、作者の意図を最優先し、
+        // 辞書の一般的な読みで上書きしない（標準的でない、あえての読み方の演出などがあるため）
+        if (chunk.type === "anno" && original.startsWith(chunk.text, origPos) && !rubyHints[chunk.text]) {
             const token = kuromojiTokens.find((t) => t.word_position - 1 === origPos);
-            if (token && token.word_type === "KNOWN" && token.surface_form.startsWith(chunk.text)) {
+            if (token && token.word_type === "KNOWN" && token.surface_form.startsWith(chunk.text) && !rubyHints[token.surface_form]) {
                 const fullReading = katakanaToHiragana(token.reading || "");
                 const extraLen = token.surface_form.length - chunk.text.length; // 送り仮名の分の文字数
                 if (extraLen === 0) {
@@ -1078,7 +1080,7 @@ function AppInner() {
                 allSegments = allSegments.map((seg) => ({
                     ...seg,
                     annotatedText: seg.annotatedText
-                        ? applyKuromojiCorrection(seg.text, seg.annotatedText, kuromojiTokenizerRef.current)
+                        ? applyKuromojiCorrection(seg.text, seg.annotatedText, kuromojiTokenizerRef.current, chapter.rubyMap || {})
                         : seg.annotatedText,
                 }));
             }
