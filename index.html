@@ -253,6 +253,16 @@ function fixTrailingHiraganaOmission(term, reading) {
     }
     return { term, reading, trailingLiteral: "" };
 }
+// --- 読み（ひらがな・カタカナであるべき部分）に、英字などの異常な文字が
+//     混ざっていないか確認する。AIがまれに、内部的な混乱の痕跡（英単語の断片など）を
+//     読みにそのまま漏らしてしまうことがあり、これを検出せずに読み上げると
+//     「りしょくりつ・すとらぐる」のように、変な英語まで音声で読まれてしまう。
+function isPlausibleReading(reading) {
+    if (!reading)
+        return false;
+    // 半角英字が1文字でも混ざっていたら、正常な読みとして信用しない
+    return !/[a-zA-Z]/.test(reading);
+}
 function validateAnnotatedText(original, annotated, rubyHints) {
     const chunks = parseAnnotationChunks(annotated);
     const LOOKAHEAD = 20; // 単語のズレを再同期するために先読みする文字数
@@ -278,7 +288,7 @@ function validateAnnotatedText(original, annotated, rubyHints) {
             // 再同期のために飛ばした部分（あれば）は原文そのままコピーする
             if (foundAt > origPos)
                 repaired += original.slice(origPos, foundAt);
-            if (chunk.type === "anno") {
+            if (chunk.type === "anno" && isPlausibleReading(chunk.reading || "")) {
                 const fixed = fixTrailingHiraganaOmission(plain, chunk.reading || "");
                 repaired += "《" + fixed.term + "｜" + fixed.reading + "》" + fixed.trailingLiteral;
                 const rubyReading = rubyHints[plain];
@@ -287,6 +297,7 @@ function validateAnnotatedText(original, annotated, rubyHints) {
                 }
             }
             else {
+                // 読みが異常（英字混入など）だった場合は、印をつけず原文の表記そのまま採用する
                 repaired += plain;
             }
             origPos = foundAt + plain.length;
