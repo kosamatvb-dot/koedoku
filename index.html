@@ -318,10 +318,10 @@ function validateAnnotatedText(original, annotated, rubyHints, kuromojiHints) {
                 // 「⚠」マークとして表示するため、同じconflicts配列に登録する
                 const rubyReading = rubyHints[plain];
                 if (rubyReading && rubyReading !== chunk.reading) {
-                    conflicts.push({ term: plain, rubyReading, aiReading: chunk.reading || "" });
+                    conflicts.push({ term: plain, rubyReading, aiReading: chunk.reading || "", source: "ruby" });
                 }
                 else if (chunk.contextDependent && kuromojiHints[plain] && kuromojiHints[plain] !== chunk.reading) {
-                    conflicts.push({ term: plain, rubyReading: kuromojiHints[plain], aiReading: chunk.reading || "" });
+                    conflicts.push({ term: plain, rubyReading: kuromojiHints[plain], aiReading: chunk.reading || "", source: "kuromoji" });
                 }
             }
             else {
@@ -1343,7 +1343,7 @@ function AppInner() {
                                 theAudio.onended = () => {
                                     cleanupAudio(theUrl, theAudio);
                                     const isLast = pieceIdx >= piecesToSpeak.length - 1;
-                                    advanceOnce(isLast ? 0 : 80 / speedMultiplier);
+                                    advanceOnce(isLast ? 0 : 50 / speedMultiplier);
                                 };
                                 theAudio.onerror = () => {
                                     cleanupAudio(theUrl, theAudio);
@@ -1415,7 +1415,7 @@ function AppInner() {
                             return;
                         if (pieceIdx < piecesToSpeak.length - 1) {
                             // ダッシュ区切りの間は少し間を置く（速度に応じてポーズ時間も調整）
-                            setTimeout(() => speakPiece(pieceIdx + 1), 110 / speedMultiplier);
+                            setTimeout(() => speakPiece(pieceIdx + 1), 70 / speedMultiplier);
                         }
                         else {
                             speakPiece(pieceIdx + 1);
@@ -1713,15 +1713,20 @@ function AppInner() {
                                 const next = { ...customReadings, [c.term]: c.rubyReading };
                                 setCustomReadings(next);
                                 persistCustomReadings(next);
-                            }, title: `「${c.term}」の読みがルビと食い違っています。AIの判断: ${c.aiReading} / ルビ: ${c.rubyReading}\nクリックするとルビの読みを辞書に固定します。`, style: {
+                            }, title: c.source === "ruby"
+                                ? `「${c.term}」の読みがルビと食い違っています。AIの判断: ${c.aiReading} / ルビ: ${c.rubyReading}\nクリックするとルビの読みを辞書に固定します。`
+                                : `「${c.term}」で、AIが辞書の読みとは違う文脈判断をしました。AIの判断: ${c.aiReading} / 辞書の読み: ${c.rubyReading}\nクリックすると辞書の読みを固定します。`, style: {
                                 display: "inline-block", marginLeft: 2, padding: "0 5px", fontSize: 11,
-                                borderRadius: 999, background: "#f0e6d8", color: "#8a6a3f", cursor: "pointer",
-                                verticalAlign: "middle", border: "1px solid #ddd0b8",
+                                borderRadius: 999,
+                                background: c.source === "ruby" ? "#f0e6d8" : "#e5eef5",
+                                color: c.source === "ruby" ? "#8a6a3f" : "#3f6b8a",
+                                cursor: "pointer", verticalAlign: "middle",
+                                border: c.source === "ruby" ? "1px solid #ddd0b8" : "1px solid #c5d5e5",
                             } },
-                            "\u26A0",
+                            c.source === "ruby" ? "⚠" : "📖",
                             c.term)))));
                 })),
-                segments.some((s) => (s.conflicts || []).length > 0) && (React.createElement("p", { style: { fontSize: 12, color: "#8a6a3f", marginTop: 10 } }, "\u26A0\u30DE\u30FC\u30AF\u306F\u3001AI\u304C\u30EB\u30D3\u3068\u7570\u306A\u308B\u8AAD\u307F\u65B9\u3092\u9078\u3093\u3060\u7B87\u6240\u3067\u3059\u3002\u30BF\u30C3\u30D7\u3059\u308B\u3068\u3001\u30EB\u30D3\u5074\u306E\u8AAD\u307F\u3092\u8F9E\u66F8\u306B\u56FA\u5B9A\u3067\u304D\u307E\u3059\u3002")))))));
+                segments.some((s) => (s.conflicts || []).length > 0) && (React.createElement("p", { style: { fontSize: 12, color: "#8a6a3f", marginTop: 10 } }, "\u26A0\u30DE\u30FC\u30AF\u306FAI\u304C\u30EB\u30D3\u3068\u7570\u306A\u308B\u8AAD\u307F\u65B9\u3092\u9078\u3093\u3060\u7B87\u6240\u3001\uD83D\uDCD6\u30DE\u30FC\u30AF\u306FAI\u304C\u8F9E\u66F8\u3068\u7570\u306A\u308B\u6587\u8108\u5224\u65AD\u3092\u3057\u305F\u7B87\u6240\u3067\u3059\u3002\u30BF\u30C3\u30D7\u3059\u308B\u3068\u3001\u305D\u308C\u305E\u308C\u306E\u8AAD\u307F\u3092\u8F9E\u66F8\u306B\u56FA\u5B9A\u3067\u304D\u307E\u3059\u3002")))))));
 }
 function App() {
     return (React.createElement(ErrorBoundary, null,
