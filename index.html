@@ -11,7 +11,7 @@
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/jszip@3.10.1/dist/jszip.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js"></script>
+<script defer src="https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/build/kuromoji.js"></script>
 <style>
   html, body { margin: 0; padding: 0; background: #f6f3ec; -webkit-text-size-adjust: 100%; }
   * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
@@ -711,15 +711,20 @@ function AppInner() {
     const [newReading, setNewReading] = useState("");
     const [epubFile, setEpubFile] = useState(null);
     const kuromojiTokenizerRef = useRef(null);
-    const [kuromojiStatus, setKuromojiStatus] = useState("loading");
-    // 辞書ベースの形態素解析器（kuromoji）を起動時に一度だけ読み込んでおく。
-    // 読み込みには少し時間がかかるが、裏で進めておき、間に合わなければその回は
-    // AIの判断だけで進める（読み込み自体はAPIを使わないので何度失敗しても問題ない）
-    useEffect(() => {
+    const kuromojiLoadStartedRef = useRef(false);
+    const [kuromojiStatus, setKuromojiStatus] = useState("idle");
+    // 辞書ベースの形態素解析器（kuromoji）を読み込む。起動時には読み込まず、
+    // 実際に章を解析するタイミングで初めて呼び出す（Geminiへの問い合わせと並行して進めることで、
+    // 使わない時にまで毎回ページの読み込みが重くなるのを防ぐ）
+    const ensureKuromojiLoading = () => {
+        if (kuromojiLoadStartedRef.current)
+            return;
+        kuromojiLoadStartedRef.current = true;
         if (typeof window.kuromoji === "undefined") {
             setKuromojiStatus("error");
             return;
         }
+        setKuromojiStatus("loading");
         window.kuromoji
             .builder({ dicPath: "https://cdn.jsdelivr.net/npm/kuromoji@0.1.2/dict/" })
             .build((err, tokenizer) => {
@@ -731,7 +736,7 @@ function AppInner() {
             kuromojiTokenizerRef.current = tokenizer;
             setKuromojiStatus("ready");
         });
-    }, []);
+    };
     // --- 本ごとに個別のデータを保存する仕組み。キーは本の識別子（ファイル名など）で、
     //     複数の本の解析結果を同時に保持できるようにする（本を切り替えても消えない） ---
     const loadAllBooks = () => {
@@ -1035,6 +1040,10 @@ function AppInner() {
             setAnalyzeError("Gemini APIキーを入力してください");
             return;
         }
+        // Geminiへの問い合わせと並行して、辞書（kuromoji）の読み込みも始めておく
+        // （新規解析が実際に必要になったタイミングで初めて読み込むことで、
+        //   既存の解析結果を聞くだけの時にまで、毎回ページが重くなるのを防ぐ）
+        ensureKuromojiLoading();
         setSelectedChapter(chapterIdx);
         setAnalyzing(true);
         setAnalyzeError("");
