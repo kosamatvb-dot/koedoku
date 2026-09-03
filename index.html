@@ -209,14 +209,24 @@ async function parsePdf(file) {
     pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
     const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     const pageTexts = [];
+    let failCount = 0;
+    let totalChars = 0;
     for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
-        const page = await pdf.getPage(pageNum);
-        const content = await page.getTextContent();
-        const items = content.items
-            .filter((it) => it.str && it.str.trim())
-            .map((it) => ({ text: it.str, x: it.transform[4], y: it.transform[5] }));
-        pageTexts.push(reorderVerticalPdfText(items));
+        try {
+            const page = await pdf.getPage(pageNum);
+            const content = await page.getTextContent();
+            const items = content.items
+                .filter((it) => it.str && it.str.trim())
+                .map((it) => ({ text: it.str, x: it.transform[4], y: it.transform[5] }));
+            const pageText = reorderVerticalPdfText(items);
+            pageTexts.push(pageText);
+            totalChars += pageText.length;
+        } catch (e) {
+            failCount++;
+            console.warn(`PDFのページ${pageNum}の読み込みに失敗しました:`, e);
+        }
     }
+    console.log(`PDF読み込み結果: 全${pdf.numPages}ページ中、失敗${failCount}ページ、合計文字数${totalChars}`);
     const fullText = pageTexts.join("\n").replace(/\n{3,}/g, "\n\n").trim();
     return splitIntoChapters(fullText, file.name.replace(/\.pdf$/i, ""));
 }
