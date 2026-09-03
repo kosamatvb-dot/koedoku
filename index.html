@@ -17,6 +17,7 @@
   #root { min-height: 100vh; }
   input, button { font-family: inherit; }
 </style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
 </head>
 <body>
 <div id="root"></div>
@@ -163,8 +164,14 @@ async function parseEpub(file) {
 async function parseTxt(file) {
     const raw = await file.text();
     const text = raw.replace(/\r\n/g, "\n").trim();
+    return splitIntoChapters(text, file.name.replace(/\.txt$/i, ""));
+}
+// --- 章見出しのパターンで文章を章ごとに分割する（TXT・PDFどちらでも共通で使う） ---
+function splitIntoChapters(text, fallbackTitle) {
     const lines = text.split("\n");
-    const chapterHeadingRe = /^第[0-90-9一二三四五六七八九十百千]+[章話部編]/;
+    // 「第◯話」「第◯章」のような素の見出しと、「【第◯話】」のような
+    // なろう系サイトでよく使われる、鍵括弧で囲まれた見出しの両方に対応する
+    const chapterHeadingRe = /^(【)?第[0-90-9一二三四五六七八九十百千]+[章話部編]/;
     const chapters = [];
     let currentTitle = "";
     let currentLines = [];
@@ -174,7 +181,7 @@ async function parseTxt(file) {
             chapters.push({
                 title: currentTitle || `セクション ${chapters.length + 1}`,
                 text: body,
-                rubyMap: {}, // TXTにはルビ情報がないため空
+                rubyMap: {}, // TXT・PDFにはルビ情報がないため空
             });
         }
     };
@@ -189,11 +196,63 @@ async function parseTxt(file) {
         }
     }
     pushCurrent();
-    // 章見出しが見つからなかった場合は、ファイル全体を1章として扱う
     if (chapters.length === 0 && text) {
-        chapters.push({ title: file.name.replace(/\.txt$/i, ""), text, rubyMap: {} });
+        chapters.push({ title: fallbackTitle, text, rubyMap: {} });
     }
     return chapters;
+}
+// --- なろうの縦書きPDFを読み込み、正しい読み順（右の列から下へ）に並べ替えて
+//     テキストを取り出す。PDF.js（ブラウザで動くPDF解析ライブラリ）を使う。
+async function parsePdf(file) {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdfjsLib = window["pdfjsLib"];
+    pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const pageTexts = [];
+    for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
+        const page = await pdf.getPage(pageNum);
+        const content = await page.getTextContent();
+        const items = content.items
+            .filter((it) => it.str && it.str.trim())
+            .map((it) => ({ text: it.str, x: it.transform[4], y: it.transform[5] }));
+        pageTexts.push(reorderVerticalPdfText(items));
+    }
+    const fullText = pageTexts.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    return splitIntoChapters(fullText, file.name.replace(/\.pdf$/i, ""));
+}
+// --- PDFの各文字（またはテキスト片）を、x座標でまとめて「列」を作り、
+//     列は右から左、列の中は上から下の順に並べ替えることで、
+//     縦書きの正しい読み順に文章を復元する ---
+function reorderVerticalPdfText(items) {
+    if (items.length === 0) return "";
+    const xTolerance = 3;
+    const sorted = [...items].sort((a, b) => b.x - a.x);
+    const columns = [];
+    for (const it of sorted) {
+        let placed = false;
+        for (const col of columns) {
+            if (Math.abs(col[0].x - it.x) < xTolerance) {
+                col.push(it);
+                placed = true;
+                break;
+            }
+        }
+        if (!placed) columns.push([it]);
+    }
+    columns.sort((a, b) => {
+        const avgA = a.reduce((s, c) => s + c.x, 0) / a.length;
+        const avgB = b.reduce((s, c) => s + c.x, 0) / b.length;
+        return avgB - avgA;
+    });
+    const lines = [];
+    for (const col of columns) {
+        col.sort((a, b) => b.y - a.y); // PDF座標は下が原点なのでy降順が上から下
+        // ページ番号のような、極端に短い（1～2文字だけの独立した）列は本文から除外する
+        const joined = col.map((c) => c.text).join("");
+        if (col.length <= 2 && /^[0-9０-９]+$/.test(joined)) continue;
+        lines.push(joined);
+    }
+    return lines.join("\n");
 }
 function chunkText(text, maxChars) {
     if (text.length <= maxChars)
@@ -975,7 +1034,8 @@ function AppInner() {
         femaleCounterRef.current = 0;
         try {
             const isTxt = /\.txt$/i.test(file.name);
-            const ch = isTxt ? await parseTxt(file) : await parseEpub(file);
+            const isPdf = /\.pdf$/i.test(file.name);
+            const ch = isTxt ? await parseTxt(file) : isPdf ? await parsePdf(file) : await parseEpub(file);
             if (ch.length === 0)
                 throw new Error("章が見つかりませんでした");
             setChapters(ch);
@@ -993,7 +1053,7 @@ function AppInner() {
         }
         catch (e) {
             console.error(e);
-            setEpubError("EPUBの読み込みに失敗しました: " + (e.message || e));
+            setEpubError("読み込みに失敗しました: " + (e.message || e));
         }
         finally {
             setParsingEpub(false);
@@ -1578,8 +1638,8 @@ function AppInner() {
                         padding: "36px 20px", borderRadius: 10, border: "2px dashed #ddd6c7", background: "#fffdf8",
                         color: "#8a8577", fontSize: 14, cursor: "pointer", textAlign: "center",
                     } },
-                    parsingEpub ? "読み込み中…" : "タップしてEPUB・TXTファイルを選択",
-                    React.createElement("input", { type: "file", accept: ".epub,.txt", style: { display: "none" }, onChange: (e) => { var _a; const f = (_a = e.target.files) === null || _a === void 0 ? void 0 : _a[0]; if (f)
+                    parsingEpub ? "読み込み中…" : "タップしてEPUB・TXT・PDFファイルを選択",
+                    React.createElement("input", { type: "file", accept: ".epub,.txt,.pdf", style: { display: "none" }, onChange: (e) => { var _a; const f = (_a = e.target.files) === null || _a === void 0 ? void 0 : _a[0]; if (f)
                             handleEpubUpload(f); } })),
                 epubError && React.createElement("p", { style: { color: "#c1533f", fontSize: 13, marginTop: 10 } }, epubError),
                 React.createElement("div", { style: { textAlign: "center", marginTop: 12 } },
