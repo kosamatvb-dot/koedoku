@@ -186,10 +186,25 @@ function splitIntoChapters(text, fallbackTitle) {
         }
     };
     for (const line of lines) {
-        if (chapterHeadingRe.test(line.trim())) {
+        const trimmed = line.trim();
+        const m = chapterHeadingRe.exec(trimmed);
+        if (m) {
             pushCurrent();
-            currentTitle = line.trim();
-            currentLines = [];
+            // PDFから抽出した文章では、見出しの直後に本文の最初の一文が
+            // そのままくっついていることが多い（例：「【第一話】その男、フリーター
+            // 『当たった！』ワンルームの室内に…」）。それを丸ごとタイトルにしてしまうと
+            // 本文の冒頭が読み上げ対象から失われてしまうため、最初の句点・感嘆符・疑問符が
+            // 出てくる位置までをタイトルとみなし、それ以降は本文として保持する。
+            const punctuationMatch = trimmed.slice(0, 40).match(/[。！？]/);
+            if (punctuationMatch && punctuationMatch.index !== undefined && punctuationMatch.index > 2) {
+                const splitAt = punctuationMatch.index + 1;
+                currentTitle = trimmed.slice(0, splitAt);
+                currentLines = [trimmed.slice(splitAt)];
+            }
+            else {
+                currentTitle = trimmed;
+                currentLines = [];
+            }
         }
         else {
             currentLines.push(line);
@@ -273,9 +288,14 @@ function reorderVerticalPdfText(items) {
     // バラバラの短い断片に見えてしまい、読み上げが不自然に途切れる原因になる。
     // 日本語の小説では段落の先頭に全角スペース（字下げ）が入るのが慣習なので、
     // それを新しい段落の目印として使い、それ以外は改行せずそのままつなげる。
+    // ただし「【第一話】」のような章見出しは字下げされていないことが多く、
+    // このルールだけだと前の行にくっついてしまい、章分けの仕組みが見出しを
+    // 見つけられなくなってしまうため、見出しらしき行は必ず改行して独立させる。
+    const headingRe = /^(【)?第[0-90-9一二三四五六七八九十百千]+[章話部編]/;
     let result = "";
     for (const line of lines) {
-        if (result === "" || line.startsWith("　")) {
+        const isHeading = headingRe.test(line);
+        if (result === "" || line.startsWith("　") || isHeading) {
             result += (result === "" ? "" : "\n") + line;
         } else {
             result += line;
