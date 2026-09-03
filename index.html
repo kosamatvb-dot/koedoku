@@ -193,11 +193,16 @@ function splitIntoChapters(text, fallbackTitle) {
             // PDFから抽出した文章では、見出しの直後に本文の最初の一文が
             // そのままくっついていることが多い（例：「【第一話】その男、フリーター
             // 『当たった！』ワンルームの室内に…」）。それを丸ごとタイトルにしてしまうと
-            // 本文の冒頭が読み上げ対象から失われてしまうため、最初の句点・感嘆符・疑問符が
-            // 出てくる位置までをタイトルとみなし、それ以降は本文として保持する。
-            const punctuationMatch = trimmed.slice(0, 40).match(/[。！？]/);
-            if (punctuationMatch && punctuationMatch.index !== undefined && punctuationMatch.index > 2) {
-                const splitAt = punctuationMatch.index + 1;
+            // 本文の冒頭が読み上げ対象から失われてしまうため、タイトルの終わりとみなせる
+            // 位置までをタイトルとし、それ以降は本文として保持する。
+            // セリフの開き括弧（「『）は、そこから本文（会話文）が始まったとみなし、
+            // 括弧の手前で区切る。句点・感嘆符・疑問符（。！？）は、セリフの中の物と
+            // 誤認しないよう、セリフの開き括弧より前にある場合だけ使い、その文字を
+            // 含めた位置で区切る。
+            const boundaryMatch = trimmed.slice(0, 40).match(/[「『。！？]/);
+            if (boundaryMatch && boundaryMatch.index !== undefined && boundaryMatch.index > 2) {
+                const isQuoteOpen = boundaryMatch[0] === "「" || boundaryMatch[0] === "『";
+                const splitAt = isQuoteOpen ? boundaryMatch.index : boundaryMatch.index + 1;
                 currentTitle = trimmed.slice(0, splitAt);
                 currentLines = [trimmed.slice(splitAt)];
             }
