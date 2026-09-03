@@ -207,11 +207,7 @@ async function parsePdf(file) {
     const arrayBuffer = await file.arrayBuffer();
     const pdfjsLib = window["pdfjsLib"];
     pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
-    const pdf = await pdfjsLib.getDocument({
-        data: arrayBuffer,
-        cMapUrl: "https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/cmaps/",
-        cMapPacked: true,
-    }).promise;
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
     const pageTexts = [];
     let failCount = 0;
     let totalChars = 0;
@@ -261,12 +257,27 @@ function reorderVerticalPdfText(items) {
     const lines = [];
     for (const col of columns) {
         col.sort((a, b) => b.y - a.y); // PDF座標は下が原点なのでy降順が上から下
-        // ページ番号のような、極端に短い（1～2文字だけの独立した）列は本文から除外する
-        const joined = col.map((c) => c.text).join("");
+        // ページ番号のような、極端に短い（1～2文字だけの独立した）列は本文から除外する。
+        // また、PDF.jsが「単語の区切りだろう」と推測して勝手に挿入する半角スペースは、
+        // 縦書きの日本語では意味を持たない（英語の文章向けの機能のため）ので取り除く。
+        const joined = col.map((c) => c.text).join("").replace(/ /g, "");
         if (col.length <= 2 && /^[0-9０-９]+$/.test(joined)) continue;
-        lines.push(joined);
+        if (joined) lines.push(joined);
     }
-    return lines.join("\n");
+    // 各「列」は縦書きの1行分にすぎず、段落の途中で行が変わっただけのことが多い。
+    // そこにまで改行を入れると、本来つながっている1つの文がAIには
+    // バラバラの短い断片に見えてしまい、読み上げが不自然に途切れる原因になる。
+    // 日本語の小説では段落の先頭に全角スペース（字下げ）が入るのが慣習なので、
+    // それを新しい段落の目印として使い、それ以外は改行せずそのままつなげる。
+    let result = "";
+    for (const line of lines) {
+        if (result === "" || line.startsWith("　")) {
+            result += (result === "" ? "" : "\n") + line;
+        } else {
+            result += line;
+        }
+    }
+    return result;
 }
 function chunkText(text, maxChars) {
     if (text.length <= maxChars)
@@ -1010,7 +1021,7 @@ function AppInner() {
         }
     };
     const jaVoice = voices.find((v) => v.lang && v.lang.startsWith("ja")) || voices[0];
-    const handleEpubUpload = async (file) => {
+    const handleEpubUpload = async (file, forceReparse) => {
         setEpubFile(file);
         setParsingEpub(true);
         setEpubError("");
@@ -1019,10 +1030,12 @@ function AppInner() {
         setSegments(null);
         // ファイル名を本の識別子として使う。以前読み込んだことがある本なら、
         // 解析済みのデータをそのまま復元し、再度AIに解析させないようにする。
+        // ただし forceReparse が指定されている場合（「読み込み直す」ボタンから呼ばれた場合）は、
+        // 保存済みのデータを無視して、必ず最初から読み込み直す。
         const bookId = "file:" + file.name;
         setCurrentBookId(bookId);
         const existing = loadAllBooks()[bookId];
-        if (existing && existing.chapters) {
+        if (!forceReparse && existing && existing.chapters) {
             setChapters(existing.chapters);
             setKnownNames(existing.knownNames || []);
             setSpeakerGender(existing.speakerGender || {});
@@ -1710,10 +1723,12 @@ function AppInner() {
                         "\uFF08",
                         chapters.length,
                         "\u7AE0\uFF09"),
-                    React.createElement("button", { onClick: () => {
-                            setChapters(null);
-                            setEpubFile(null);
-                        }, style: { padding: "6px 12px", borderRadius: 999, border: "1px solid #ddd6c7", background: "#fffdf8", color: "#8a8577", fontSize: 12, cursor: "pointer", fontFamily: "inherit" } }, "\u21BA \u5225\u306E\u30D5\u30A1\u30A4\u30EB")),
+                    React.createElement("div", { style: { display: "flex", gap: 6 } },
+                        epubFile && React.createElement("button", { onClick: () => { if (epubFile) handleEpubUpload(epubFile, true); }, style: { padding: "6px 12px", borderRadius: 999, border: "1px solid #ddd6c7", background: "#fffdf8", color: "#8a6a3f", fontSize: 12, cursor: "pointer", fontFamily: "inherit" } }, "\uD83D\uDD04 \u8AAD\u307F\u8FBC\u307F\u76F4\u3059"),
+                        React.createElement("button", { onClick: () => {
+                                setChapters(null);
+                                setEpubFile(null);
+                            }, style: { padding: "6px 12px", borderRadius: 999, border: "1px solid #ddd6c7", background: "#fffdf8", color: "#8a8577", fontSize: 12, cursor: "pointer", fontFamily: "inherit" } }, "\u21BA \u5225\u306E\u30D5\u30A1\u30A4\u30EB"))),
                 React.createElement("div", { style: { background: "#fffdf8", border: "1px solid #ddd6c7", borderRadius: 10, overflow: "hidden" } }, chapters.map((ch, i) => {
                     const isCached = !!chapterSegmentsCache[i];
                     return (React.createElement("div", { key: i, style: {
