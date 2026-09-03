@@ -296,15 +296,21 @@ function reorderVerticalPdfText(items) {
     // ただし「【第一話】」のような章見出しは字下げされていないことが多く、
     // このルールだけだと前の行にくっついてしまい、章分けの仕組みが見出しを
     // 見つけられなくなってしまうため、見出しらしき行は必ず改行して独立させる。
+    // さらに、見出しの「直後」に続く本文の最初の行も、字下げされていないことが
+    // 多く、そのままだと見出しと同じ行にくっついてしまう（見出し＋本文の冒頭が
+    // 一体化した巨大な1行になり、章一覧の見出し表示が本文で埋め尽くされる原因に
+    // なっていた）ため、見出しの直後の行も必ず改行して独立させる。
     const headingRe = /^(【)?第[0-90-9一二三四五六七八九十百千]+[章話部編]/;
     let result = "";
+    let prevWasHeading = false;
     for (const line of lines) {
         const isHeading = headingRe.test(line);
-        if (result === "" || line.startsWith("　") || isHeading) {
+        if (result === "" || line.startsWith("　") || isHeading || prevWasHeading) {
             result += (result === "" ? "" : "\n") + line;
         } else {
             result += line;
         }
+        prevWasHeading = isHeading;
     }
     return result;
 }
